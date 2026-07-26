@@ -380,7 +380,7 @@ bool on9rstore::is_time_anchor_input_valid(
         anchor.source_count < count_bits(known_sources) ||
         anchor.quality > on9rstore_def::TIME_ANCHOR_QUALITY_CONFIRMED ||
         anchor.utc_us == 0 ||
-        anchor.supersedes_sequence > state.next_time_anchor_sequence) {
+        anchor.replace_sequence > state.next_time_anchor_sequence) {
         return false;
     }
 
@@ -421,7 +421,7 @@ esp_err_t on9rstore::append_time_anchor_unsafe(
     entry.utc_us = anchor.utc_us;
     entry.uncertainty_us = anchor.uncertainty_us;
     entry.max_durable_entry_id = newest_entry_id;
-    entry.supersedes_sequence = anchor.supersedes_sequence;
+    entry.replace_sequence = anchor.replace_sequence;
     entry.checksum =
         calc_crc32(reinterpret_cast<const uint8_t *>(&entry), sizeof(entry));
 

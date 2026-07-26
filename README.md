@@ -152,16 +152,20 @@ on9rstore_def::time_anchor anchor = {
     .monotonic_us = measurement_uptime_us,
     .utc_us = measurement_utc_us,
     .uncertainty_us = estimated_error_us,
-    .supersedes_sequence = 0,
+    .replace_sequence = 0,
 };
 ESP_ERROR_CHECK(store.append_time_anchor(anchor));
 ```
 
 The caller must validate clock samples and submit an accepted model commit,
 including source mask, source count, quality, flags, measurement monotonic
-instant, UTC, uncertainty, and optional superseded sequence. `on9rstore`
+instant, UTC, uncertainty, and optional replacement sequence. `on9rstore`
 validates the representation and commit ordering, but it does not decide
 whether GPS, NTP, cellular, RTC, or another source is trustworthy.
+
+`replace_sequence == 0` means the anchor does not explicitly replace another
+time model. A non-zero value names an earlier time-anchor sequence that this
+anchor corrects or replaces; it does not erase the older slot.
 
 Time anchors support deriving wall time for entries created before the clock
 became known without rewriting those entries. Entry ID and monotonic uptime

@@ -9,6 +9,50 @@
 
 #include "on9rstore.hpp"
 
+namespace
+{
+    static const constexpr uint32_t crc32_polynomial = 0xedb88320UL;
+
+    constexpr uint32_t make_crc32_lut_entry(uint32_t value)
+    {
+        for (uint8_t bit = 0; bit < 8; bit += 1) {
+            value = (value & 1U) ?
+                ((value >> 1U) ^ crc32_polynomial) :
+                (value >> 1U);
+        }
+
+        return value;
+    }
+
+    struct crc32_lut {
+        uint32_t values[256] = {};
+
+        constexpr crc32_lut()
+        {
+            for (size_t idx = 0; idx < 256; idx += 1) {
+                values[idx] =
+                    make_crc32_lut_entry(static_cast<uint32_t>(idx));
+            }
+        }
+    };
+
+    static const constexpr crc32_lut crc32_table = {};
+
+    constexpr uint32_t crc32_constexpr(const char *buf, size_t len)
+    {
+        uint32_t crc = UINT32_MAX;
+        for (size_t idx = 0; idx < len; idx += 1) {
+            const uint8_t table_idx = static_cast<uint8_t>(
+                crc ^ static_cast<uint8_t>(buf[idx]));
+            crc = crc32_table.values[table_idx] ^ (crc >> 8U);
+        }
+
+        return ~crc;
+    }
+
+    static_assert(crc32_constexpr("123456789", 9) == 0xcbf43926UL);
+}
+
 on9rstore::on9rstore(const char *_file_path, on9rstore_cfg *config) : file_path(_file_path)
 {
     if (config != nullptr) {
@@ -354,10 +398,9 @@ uint32_t on9rstore::calc_crc32(const uint8_t *buf, size_t len)
 uint32_t on9rstore::calc_crc32_update(uint32_t crc, const uint8_t *buf, size_t len)
 {
     for (size_t idx = 0; idx < len; idx += 1) {
-        crc ^= buf[idx];
-        for (uint8_t bit = 0; bit < 8; bit += 1) {
-            crc = (crc & 1) ? ((crc >> 1) ^ 0xedb88320UL) : (crc >> 1);
-        }
+        const uint8_t table_idx =
+            static_cast<uint8_t>(crc ^ buf[idx]);
+        crc = crc32_table.values[table_idx] ^ (crc >> 8U);
     }
 
     return crc;

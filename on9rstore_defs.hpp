@@ -63,7 +63,7 @@ namespace on9rstore_def
         uint64_t monotonic_us;
         uint64_t utc_us;
         uint64_t uncertainty_us;
-        uint64_t supersedes_sequence;
+        uint64_t replace_sequence;
     };
 
     struct ON9RSTORE_PACKED time_anchor_entry {
@@ -82,7 +82,7 @@ namespace on9rstore_def
         uint64_t utc_us;
         uint64_t uncertainty_us;
         uint64_t max_durable_entry_id;
-        uint64_t supersedes_sequence;
+        uint64_t replace_sequence;
         uint32_t checksum;
     };
 
