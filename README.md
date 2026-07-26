@@ -120,10 +120,18 @@ Each fixed-size data file contains:
 
 An open segment is recovered by scanning only its generation-matched,
 CRC-valid entry run. A sealed segment normally loads from its footer after the
-footer and sparse-index CRC both validate; a torn index falls back to scanning
-and reconstruction. The manifest is a boot accelerator and durable retirement
-checkpoint; segment headers, footers, generations, indexes, and entry CRCs
-remain independently validated.
+footer and sparse-index CRC both validate. If the footer remains valid but the
+index does not, recovery proves that the entry run reaches the footer's
+declared boundary, rebuilds the index, and rewrites the replicated footers
+without reopening the segment for append. Valid entries found beyond an older
+footer are retained in the repaired seal. Corruption before the declared
+boundary fails closed instead of silently truncating sealed history.
+
+Index repair uses the normal index-sync-before-footer ordering. A reset during
+repair leaves the same scan-and-repair path available on the next boot. The
+manifest is a boot accelerator and durable retirement checkpoint; segment
+headers, footers, generations, indexes, and entry CRCs remain independently
+validated.
 
 ## Manifest and time anchors
 

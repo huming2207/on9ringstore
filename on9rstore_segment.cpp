@@ -324,7 +324,8 @@ bool on9rstore::is_segment_footer_valid(
     if ((candidate.entry_count == 0 &&
          (candidate.first_entry_id != 0 ||
           candidate.last_entry_id != 0 ||
-          candidate.index_count != 0)) ||
+          candidate.index_count != 0 ||
+          candidate.data_end != header.data_start)) ||
         (candidate.entry_count != 0 &&
          (candidate.first_entry_id == 0 ||
           candidate.last_entry_id < candidate.first_entry_id))) {
@@ -486,7 +487,8 @@ esp_err_t on9rstore::scan_one_entry(
 
 esp_err_t on9rstore::scan_segment_entries(
     int segment_fd, const on9rstore_def::segment_header &header,
-    segment_descriptor *descriptor_out, bool build_index)
+    segment_descriptor *descriptor_out, bool build_index,
+    const on9rstore_def::segment_footer *sealed_prefix)
 {
     if (descriptor_out == nullptr) {
         return ESP_ERR_INVALID_ARG;
@@ -503,6 +505,8 @@ esp_err_t on9rstore::scan_segment_entries(
 
     uint64_t offset = header.data_start;
     uint64_t previous_id = 0;
+    bool prefix_valid =
+        sealed_prefix == nullptr || sealed_prefix->entry_count == 0;
     while (offset <= header.data_end - on9rstore_def::min_entry_size) {
         on9rstore_def::entry_header entry = {};
         uint64_t entry_size = 0;
@@ -533,9 +537,100 @@ esp_err_t on9rstore::scan_segment_entries(
         descriptor.index_count = build_index ? sparse_index_count : 0;
         previous_id = entry.entry_id;
         offset += entry_size;
+
+        if (sealed_prefix != nullptr &&
+            descriptor.entry_count == sealed_prefix->entry_count) {
+            if (descriptor.first_entry_id !=
+                    sealed_prefix->first_entry_id ||
+                descriptor.last_entry_id !=
+                    sealed_prefix->last_entry_id ||
+                descriptor.data_end != sealed_prefix->data_end) {
+                return ESP_ERR_INVALID_CRC;
+            }
+            prefix_valid = true;
+        }
+    }
+
+    if (!prefix_valid) {
+        return ESP_ERR_INVALID_CRC;
     }
 
     *descriptor_out = descriptor;
+    return ESP_OK;
+}
+
+void on9rstore::set_sealed_segment_descriptor(
+    uint32_t slot, const on9rstore_def::segment_footer &footer)
+{
+    segment_descriptor descriptor = {};
+    descriptor.valid = true;
+    descriptor.sealed = true;
+    descriptor.slot = slot;
+    descriptor.generation = footer.generation;
+    descriptor.first_entry_id = footer.first_entry_id;
+    descriptor.last_entry_id = footer.last_entry_id;
+    descriptor.entry_count = footer.entry_count;
+    descriptor.data_end = footer.data_end;
+    descriptor.index_count = footer.index_count;
+    segments[slot] = descriptor;
+}
+
+esp_err_t on9rstore::repair_sealed_segment(
+    int segment_fd, uint32_t slot,
+    const on9rstore_def::segment_header &header,
+    const on9rstore_def::segment_footer &footer)
+{
+    segment_descriptor descriptor = {};
+    esp_err_t ret = scan_segment_entries(
+        segment_fd, header, &descriptor, true, &footer);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Recover: sealed data is corrupt in slot %" PRIu32,
+                 slot);
+        return ret;
+    }
+
+    ret = open_active_segment(slot);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    active_segment = header;
+    active_write_offset = descriptor.data_end;
+    write_buf_offset = active_write_offset;
+    segments[slot] = descriptor;
+    ret = seal_active_segment_unsafe();
+    close_writer_segment();
+    if (ret == ESP_OK) {
+        ESP_LOGW(TAG, "Recover: repaired sealed index in slot %" PRIu32,
+                 slot);
+    }
+    return ret;
+}
+
+esp_err_t on9rstore::recover_segment_contents(
+    int segment_fd, uint32_t slot,
+    const on9rstore_def::segment_header &header)
+{
+    on9rstore_def::segment_footer footer = {};
+    esp_err_t ret = load_segment_footer(segment_fd, header, &footer);
+    if (ret == ESP_ERR_NOT_FOUND) {
+        return scan_segment_entries(
+            segment_fd, header, &segments[slot], false);
+    }
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = validate_segment_index(segment_fd, header, footer);
+    if (ret == ESP_ERR_INVALID_CRC) {
+        return repair_sealed_segment(
+            segment_fd, slot, header, footer);
+    }
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    set_sealed_segment_descriptor(slot, footer);
     return ESP_OK;
 }
 
@@ -558,43 +653,16 @@ esp_err_t on9rstore::recover_one_segment(uint32_t slot)
         close_reader_segment();
         return ESP_OK;
     }
+    if (state.oldest_segment_generation != 0 &&
+        header.generation < state.oldest_segment_generation) {
+        segments[slot] = {};
+        close_reader_segment();
+        return ESP_OK;
+    }
 
-    on9rstore_def::segment_footer footer = {};
-    ret = load_segment_footer(reader_fd, header, &footer);
-    if (ret == ESP_OK) {
-        const esp_err_t index_ret =
-            validate_segment_index(reader_fd, header, footer);
-        if (index_ret == ESP_ERR_INVALID_CRC) {
-            ret = ESP_ERR_NOT_FOUND;
-        } else if (index_ret != ESP_OK) {
-            ret = index_ret;
-        }
-    }
-    if (ret == ESP_OK) {
-        segment_descriptor descriptor = {};
-        descriptor.valid = true;
-        descriptor.sealed = true;
-        descriptor.slot = slot;
-        descriptor.generation = header.generation;
-        descriptor.first_entry_id = footer.first_entry_id;
-        descriptor.last_entry_id = footer.last_entry_id;
-        descriptor.entry_count = footer.entry_count;
-        descriptor.data_end = footer.data_end;
-        descriptor.index_count = footer.index_count;
-        segments[slot] = descriptor;
-    } else if (ret == ESP_ERR_NOT_FOUND) {
-        ret = scan_segment_entries(reader_fd, header, &segments[slot],
-                                   false);
-    }
+    ret = recover_segment_contents(reader_fd, slot, header);
 
     close_reader_segment();
-    if (ret == ESP_OK &&
-        state.oldest_segment_generation != 0 &&
-        segments[slot].valid &&
-        segments[slot].generation <
-            state.oldest_segment_generation) {
-        segments[slot] = {};
-    }
     return ret;
 }
 

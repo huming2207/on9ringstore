@@ -88,6 +88,13 @@ private: // Segment operations
     esp_err_t initialise_empty_segment(int segment_fd, uint32_t slot);
     esp_err_t recover_all_segments();
     esp_err_t recover_one_segment(uint32_t slot);
+    esp_err_t recover_segment_contents(
+        int segment_fd, uint32_t slot,
+        const on9rstore_def::segment_header &header);
+    esp_err_t repair_sealed_segment(
+        int segment_fd, uint32_t slot,
+        const on9rstore_def::segment_header &header,
+        const on9rstore_def::segment_footer &footer);
     esp_err_t recover_open_segment(uint32_t slot,
                                    const on9rstore_def::segment_header &header);
     esp_err_t seal_recovered_segment(uint32_t slot);
@@ -113,7 +120,9 @@ private: // Segment operations
     esp_err_t scan_segment_entries(int segment_fd,
                                    const on9rstore_def::segment_header &header,
                                    segment_descriptor *descriptor_out,
-                                   bool build_index);
+                                   bool build_index,
+                                   const on9rstore_def::segment_footer
+                                       *sealed_prefix = nullptr);
     esp_err_t scan_one_entry(int segment_fd,
                              const on9rstore_def::segment_header &segment,
                              uint64_t offset,
@@ -125,6 +134,8 @@ private: // Segment operations
                                  const on9rstore_def::segment_header &header) const;
     bool calculate_segment_geometry(uint64_t segment_size,
                                     on9rstore_def::segment_header *geometry_out) const;
+    void set_sealed_segment_descriptor(
+        uint32_t slot, const on9rstore_def::segment_footer &footer);
     void update_recovered_manifest_state();
     void update_oldest_segment_generation();
 
