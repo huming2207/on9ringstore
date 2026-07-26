@@ -13,6 +13,10 @@ endif()
 idf_component_register(
         SRCS
             "on9rstore.cpp"
+            "on9rstore_entry.cpp"
+            "on9rstore_io.cpp"
+            "on9rstore_manifest.cpp"
+            "on9rstore_segment.cpp"
 
         INCLUDE_DIRS
             "."
