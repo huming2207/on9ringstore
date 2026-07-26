@@ -1,0 +1,28 @@
+menu "on9rstore"
+
+    config ON9RSTORE_SPARSE_FILE_SIZE
+        int "Sparse data file size in bytes"
+        default 1048576
+        range 65536 2147483647
+        help
+            Fixed size of each preallocated contiguous data_N.db file.
+            The default is 1 MiB for NOR-flash testing.
+            The value must be a multiple of 4096 bytes.
+
+    config ON9STORE_SPARSE_FILE_CNT
+        int "Sparse data file count"
+        default 5
+        range 2 9999
+        help
+            Number of permanent preallocated contiguous data_N.db files.
+
+    config ON9RSTORE_TIME_ANCHOR_CNT
+        int "Manifest time-anchor entry count"
+        default 512
+        range 1 65535
+        help
+            Number of 512-byte time-anchor slots in manifest.db.
+            Existing stores use the count persisted in their superblock even
+            when a later firmware build selects a different value.
+
+endmenu
