@@ -1,6 +1,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <sys/stat.h>
@@ -40,6 +41,57 @@ esp_err_t on9rstore::build_data_path(uint32_t slot, char *path_out,
     }
 
     return ESP_OK;
+}
+
+bool on9rstore::is_data_file_name(const char *name)
+{
+    static const constexpr char prefix[] = "data_";
+    static const constexpr char suffix[] = ".db";
+    if (name == nullptr ||
+        strncmp(name, prefix, sizeof(prefix) - 1) != 0) {
+        return false;
+    }
+
+    const char *cursor = name + sizeof(prefix) - 1;
+    const char *digits = cursor;
+    while (*cursor >= '0' && *cursor <= '9') {
+        cursor += 1;
+    }
+
+    return cursor != digits && strcmp(cursor, suffix) == 0;
+}
+
+esp_err_t on9rstore::verify_new_store_namespace_empty() const
+{
+    DIR *directory = opendir(file_path);
+    if (directory == nullptr) {
+        ESP_LOGE(TAG, "Manifest: opendir(%s) failed: errno=%d",
+                 file_path, errno);
+        return ESP_FAIL;
+    }
+
+    esp_err_t ret = ESP_OK;
+    errno = 0;
+    while (true) {
+        const struct dirent *entry = readdir(directory);
+        if (entry == nullptr) {
+            if (errno != 0) {
+                ESP_LOGE(TAG, "Manifest: readdir failed: errno=%d", errno);
+                ret = ESP_FAIL;
+            }
+            break;
+        }
+
+        if (is_data_file_name(entry->d_name)) {
+            ESP_LOGE(TAG, "Manifest: existing store file %s blocks creation",
+                     entry->d_name);
+            ret = ESP_ERR_INVALID_STATE;
+            break;
+        }
+    }
+
+    (void)closedir(directory);
+    return ret;
 }
 
 esp_err_t on9rstore::validate_contiguous_file(const char *path, uint64_t size) const

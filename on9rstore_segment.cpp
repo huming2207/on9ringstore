@@ -11,6 +11,7 @@ bool on9rstore::calculate_segment_geometry(
     on9rstore_def::segment_header *geometry_out) const
 {
     if (geometry_out == nullptr ||
+        segment_size > SIZE_MAX ||
         segment_size % on9rstore_def::segment_header_slot_size != 0 ||
         segment_size <= on9rstore_def::segment_header_region_size +
                             on9rstore_def::segment_footer_region_size) {
@@ -123,8 +124,40 @@ esp_err_t on9rstore::initialise_empty_segment(int segment_fd, uint32_t slot)
     return write_segment_headers(segment_fd, header);
 }
 
-esp_err_t on9rstore::provision_one_segment(uint32_t slot)
+esp_err_t on9rstore::resume_provisioning_segment(
+    int segment_fd, uint32_t slot, bool *active_found)
 {
+    on9rstore_def::segment_header header = {};
+    esp_err_t ret = load_segment_header(segment_fd, slot, &header);
+    if (ret == ESP_ERR_INVALID_STATE) {
+        return initialise_empty_segment(segment_fd, slot);
+    }
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    if (header.generation == 0) {
+        return write_segment_headers(segment_fd, header);
+    }
+
+    if (slot != 0 || header.generation != 1 || *active_found) {
+        ESP_LOGE(TAG, "Provision: unexpected generation %" PRIu64
+                      " in slot %" PRIu32,
+                 header.generation, slot);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    *active_found = true;
+    return write_segment_headers(segment_fd, header);
+}
+
+esp_err_t on9rstore::provision_one_segment(
+    uint32_t slot, bool *active_found)
+{
+    if (active_found == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     char path[PATH_MAX] = {};
     esp_err_t ret = build_data_path(slot, path, sizeof(path));
     if (ret != ESP_OK) {
@@ -133,6 +166,11 @@ esp_err_t on9rstore::provision_one_segment(uint32_t slot)
 
     if (state.state == on9rstore_def::manifest_state_ready) {
         return validate_contiguous_file(path, segment_file_size);
+    }
+    if (state.state !=
+        on9rstore_def::manifest_state_provisioning_owned) {
+        ESP_LOGE(TAG, "Provision: manifest has no namespace ownership proof");
+        return ESP_ERR_INVALID_STATE;
     }
 
     bool created = false;
@@ -144,7 +182,9 @@ esp_err_t on9rstore::provision_one_segment(uint32_t slot)
     int segment_fd = -1;
     ret = open_file(path, &segment_fd);
     if (ret == ESP_OK) {
-        ret = initialise_empty_segment(segment_fd, slot);
+        ret = created ?
+            initialise_empty_segment(segment_fd, slot) :
+            resume_provisioning_segment(segment_fd, slot, active_found);
     }
     if (segment_fd >= 0) {
         (void)close(segment_fd);
@@ -153,10 +193,30 @@ esp_err_t on9rstore::provision_one_segment(uint32_t slot)
     return ret;
 }
 
+esp_err_t on9rstore::finish_segment_provisioning(bool active_found)
+{
+    esp_err_t ret = ESP_OK;
+    if (!active_found) {
+        ret = activate_segment_unsafe(0, 1);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+    }
+
+    state.state = on9rstore_def::manifest_state_ready;
+    state.active_slot = 0;
+    state.active_segment_generation = 1;
+    state.next_segment_generation = 2;
+    state.oldest_segment_generation = 1;
+    return commit_manifest_superblock_unsafe();
+}
+
 esp_err_t on9rstore::provision_all_segments()
 {
+    bool active_found = false;
     for (uint32_t slot = 0; slot < segment_count; slot += 1) {
-        esp_err_t ret = provision_one_segment(slot);
+        esp_err_t ret =
+            provision_one_segment(slot, &active_found);
         if (ret != ESP_OK) {
             return ret;
         }
@@ -166,17 +226,7 @@ esp_err_t on9rstore::provision_all_segments()
         return ESP_OK;
     }
 
-    esp_err_t ret = activate_segment_unsafe(0, 1);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-
-    state.state = on9rstore_def::manifest_state_ready;
-    state.active_slot = 0;
-    state.active_segment_generation = 1;
-    state.next_segment_generation = 2;
-    state.oldest_segment_generation = 1;
-    return commit_manifest_superblock_unsafe();
+    return finish_segment_provisioning(active_found);
 }
 
 bool on9rstore::is_segment_header_valid(
@@ -273,11 +323,19 @@ bool on9rstore::is_segment_footer_valid(
 
     if ((candidate.entry_count == 0 &&
          (candidate.first_entry_id != 0 ||
-          candidate.last_entry_id != 0)) ||
+          candidate.last_entry_id != 0 ||
+          candidate.index_count != 0)) ||
         (candidate.entry_count != 0 &&
          (candidate.first_entry_id == 0 ||
           candidate.last_entry_id < candidate.first_entry_id))) {
         return false;
+    }
+    if (candidate.entry_count != 0) {
+        const uint64_t expected_index_count =
+            (candidate.entry_count - 1) / candidate.index_stride + 1;
+        if (candidate.index_count != expected_index_count) {
+            return false;
+        }
     }
 
     on9rstore_def::segment_footer copy = candidate;
@@ -325,6 +383,39 @@ esp_err_t on9rstore::load_segment_footer(
 
     *footer_out = selected;
     return ESP_OK;
+}
+
+esp_err_t on9rstore::validate_segment_index(
+    int segment_fd, const on9rstore_def::segment_header &header,
+    const on9rstore_def::segment_footer &footer) const
+{
+    if (footer.index_count == 0) {
+        return footer.index_checksum == 0 ?
+            ESP_OK : ESP_ERR_INVALID_CRC;
+    }
+
+    uint8_t chunk[256] = {};
+    uint64_t offset = header.index_start;
+    size_t remaining =
+        static_cast<size_t>(footer.index_count) *
+        sizeof(on9rstore_def::sparse_index_entry);
+    uint32_t crc = UINT32_MAX;
+    while (remaining > 0) {
+        const size_t chunk_len =
+            remaining < sizeof(chunk) ? remaining : sizeof(chunk);
+        esp_err_t ret = read_exact_fd(
+            segment_fd, segment_file_size, offset, chunk, chunk_len);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+
+        crc = calc_crc32_update(crc, chunk, chunk_len);
+        offset += chunk_len;
+        remaining -= chunk_len;
+    }
+
+    return ~crc == footer.index_checksum ?
+        ESP_OK : ESP_ERR_INVALID_CRC;
 }
 
 esp_err_t on9rstore::scan_one_entry(
@@ -471,6 +562,15 @@ esp_err_t on9rstore::recover_one_segment(uint32_t slot)
     on9rstore_def::segment_footer footer = {};
     ret = load_segment_footer(reader_fd, header, &footer);
     if (ret == ESP_OK) {
+        const esp_err_t index_ret =
+            validate_segment_index(reader_fd, header, footer);
+        if (index_ret == ESP_ERR_INVALID_CRC) {
+            ret = ESP_ERR_NOT_FOUND;
+        } else if (index_ret != ESP_OK) {
+            ret = index_ret;
+        }
+    }
+    if (ret == ESP_OK) {
         segment_descriptor descriptor = {};
         descriptor.valid = true;
         descriptor.sealed = true;
@@ -584,6 +684,14 @@ esp_err_t on9rstore::seal_active_segment_unsafe()
     footer.data_end = descriptor.data_end;
     footer.index_count = sparse_index_count;
     footer.index_stride = active_segment.index_stride;
+    if (sparse_index_count > 0) {
+        const size_t index_size =
+            static_cast<size_t>(sparse_index_count) *
+            sizeof(on9rstore_def::sparse_index_entry);
+        footer.index_checksum = calc_crc32(
+            reinterpret_cast<const uint8_t *>(sparse_index.get()),
+            index_size);
+    }
 
     ret = write_segment_footers(writer_fd, footer);
     if (ret == ESP_OK) {

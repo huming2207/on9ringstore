@@ -162,17 +162,21 @@ namespace on9rstore_def
         uint64_t data_end;
         uint32_t index_count;
         uint32_t index_stride;
+        uint32_t index_checksum;
         uint32_t checksum;
     };
 
-    static_assert(sizeof(segment_footer) == 68);
+    static_assert(sizeof(segment_footer) == 72);
 
     static const constexpr uint32_t entry_magic = 0x39525352; // "RSR9"
     static const constexpr uint16_t entry_revision = 4;
     static const constexpr uint32_t manifest_magic = 0x39534d52; // "RMS9"
     static const constexpr uint16_t manifest_revision = 4;
-    static const constexpr uint16_t manifest_state_provisioning = 0x7001;
+    static const constexpr uint16_t manifest_state_provisioning_unverified =
+        0x7001;
     static const constexpr uint16_t manifest_state_ready = 0x7002;
+    static const constexpr uint16_t manifest_state_provisioning_owned =
+        0x7003;
     static const constexpr uint32_t time_anchor_magic = 0x39415452; // "RTA9"
     static const constexpr uint16_t time_anchor_revision = 1;
     static const constexpr uint32_t segment_header_magic = 0x39485352; // "RSH9"

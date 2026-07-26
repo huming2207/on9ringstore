@@ -1,91 +1,174 @@
 # on9rstore
 
-`on9rstore` is a fixed-size FAT-file ring store for long-lived device logs.
-For a new `/data/log.db` (or another caller-selected path), it first creates
-`/data/log.db.on9rstore-new` with
-`esp_vfs_fat_create_contiguous_file(..., true)`. It writes the store identity
-and empty checkpoints there, syncs them, then renames the staging file to the
-final path. It verifies that the resulting file remains contiguous and rejects
-an existing final file with a different size or no valid revision-3 format
-header.
-
-The final database file never grows, truncates, or deletes itself. Ordinary
-ring writes therefore do not allocate clusters or grow the file: the intended
-benefits are sustained sequential-ish I/O, no later file fragmentation, and no
-FAT-chain updates during normal writes. `fsync()` can still rewrite the file's
-directory entry in place, such as for its timestamp.
-
-The constructor is intentionally small and keeps the mount-specific choice at
-the call site:
+`on9rstore` is a fixed-capacity, segmented FAT store for append-oriented
+device data. The constructor path is a mounted FAT base path:
 
 ```c++
-on9rstore_cfg rstore_cfg = {
-    .base_path = "/data",
-    .file_size = 1024ULL * 1024ULL * 1024ULL,
+on9rstore_cfg cfg = {
     .write_buffer_size = 8192,
     .copy_coredump = true,
 };
 
-on9rstore rstore("/data/log.db", &rstore_cfg);
-ESP_ERROR_CHECK(rstore.init());
+on9rstore store("/data", &cfg);
+ESP_ERROR_CHECK(store.init());
 ```
 
-`init()` increments the persisted 24-bit boot counter and writes a boot entry.
-When ESP-IDF has a new valid flash coredump, `copy_coredump` streams the
-boot-event header and raw coredump image into that boot entry in bounded chunks.
-It fingerprints the image to avoid copying the same retained coredump after a
-later normal reset, and deliberately does not erase ESP-IDF's coredump
-partition. Entry IDs are `(boot_counter << 40) | sequence`; the 40-bit
-sequence starts at one each boot and advances for every accepted
-`append_entry()` call. A 64-bit `esp_timer_get_time()` uptime timestamp is
-stored in each entry.
-
-The revision-3 on-disk layout is little-endian and self-identifying. Its first
-16 KiB are:
+For a new store, `init()` creates this permanent layout:
 
 ```text
-├── store header slot 0: 4096 B
-├── store header slot 1: 4096 B
-├── metadata slot 0:     4096 B
-├── metadata slot 1:     4096 B
-└── ring data area: file_size - 16384 B
+/data/
+├── manifest.db
+├── data_0.db
+├── data_1.db
+├── ...
+└── data_N.db
 ```
 
-Each replicated store header contains a non-zero 16-bit ID generated from
-`esp_random()` when the database incarnation is created. The entry layout is:
+Every file is allocated at its final size by
+`esp_vfs_fat_create_contiguous_file(..., true)` and checked with
+`esp_vfs_fat_test_contiguous_file()`. Healthy files are never grown,
+truncated, renamed, or deleted during rotation. A physical `data_N.db`
+filename denotes a reusable slot; the generation stored inside it determines
+its logical order.
+
+The creation geometry comes from Kconfig:
 
 ```text
-[magic: u32] [revision: u16] [type: u16] [entry_id: u64]
-[uptime_us: u64] [payload_len: u32] [store_id: u16]
-[payload] [crc32] [zero padding to 4 B]
+CONFIG_ON9RSTORE_SPARSE_FILE_SIZE  default 1048576 bytes
+CONFIG_ON9STORE_SPARSE_FILE_CNT    default 5
+CONFIG_ON9RSTORE_TIME_ANCHOR_CNT   default 512
 ```
 
-`type` is a 16-bit application namespace. Values `0xfff0` through `0xffff`
-are reserved by `on9rstore` and are rejected by the public `append_entry()`;
-internal writers (boot event, time sync, padding) bypass that check. A complete entry is identified by its header,
-revision, matching store ID, sane bounds, and trailing CRC32. The metadata
-checkpoints also carry and validate the store ID.
+An existing `manifest.db` is authoritative. Its segment size, segment count,
+and time-anchor count override a later firmware build's Kconfig values, so the
+component never resizes or reinterprets an existing store.
 
-Writes are batched until `flush_write()` unless the entry is larger than
-`write_buffer_size` or `force_flush` is selected. Large entries stream directly
-from the caller buffer rather than allocating a second entry-sized heap buffer.
-When the ring needs to reuse old bytes, `on9rstore` first persists the retired
-head, then writes the new data, syncs it, and finally commits the new tail. A
-reset can therefore lose the entry being appended but cannot leave committed
-metadata pointing at bytes that were already reused.
+Before creating a new manifest, `init()` scans the base directory and refuses
+creation if any canonical `data_<number>.db` name already exists. It then
+writes and syncs two `provisioning_owned` manifest superblocks before creating
+the first data file. This durable state proves that data files appearing
+during a resumed provisioning attempt belong to this store, rather than to an
+older store whose manifest was lost.
 
-The two CRC-protected metadata slots are checkpoints, not the only recovery
-source. If neither is valid, a pre-existing file with a valid store header is
-scanned for complete revision-3 entries, matching store IDs, wrap padding,
-entry IDs, and CRCs. A final file without a valid store header is never scanned
-or reset automatically. This prevents recycled FAT clusters from becoming an
-apparently valid new database. Runtime head removal skips a sane-length CRC-bad
-entry and resynchronises past torn bytes, so one corrupt entry does not
-permanently stop logging.
+Provisioning is resumable after each file creation and replicated header
+write. A reset after slot 0 was activated as generation 1 but before the ready
+manifest checkpoint preserves that active generation instead of resetting it.
+Legacy unverified provisioning manifests fail closed. Ready stores are
+unchanged.
 
-Preallocation reduces, but cannot eliminate, FAT sudden-power-loss risk: it
-cannot protect against an SD card that lies about completed writes, nor
-corruption of FAT structures caused by power loss during the initial allocation
-or unrelated filesystem activity. `deinit()` serialises with active append and
-flush operations; destroying the C++ object itself still requires the caller to
-ensure no other task can call it again.
+## Descriptors and concurrency
+
+The component uses three distinct descriptors:
+
+- `manifest_fd` for manifest checkpoints and time-anchor slots;
+- `writer_fd` for the current active data segment;
+- `reader_fd` for recovery and the future query path.
+
+This prevents a reader seek from changing the writer's position and keeps
+manifest traffic separate from segment traffic. Lifecycle and writes have
+dedicated FreeRTOS mutexes. A reader mutex is allocated for the public query
+path; initial recovery is performed exclusively before `init()` publishes the
+store.
+
+## Entries and rotation
+
+Data files contain sorted append runs. Entries in one generation are written
+sequentially from the data-area start. When the active file is full, it is
+flushed and sealed with a sparse index and replicated footer. The next
+physical slot is durably retired, assigned a greater generation, and reused
+from its beginning.
+
+The revision-4 entry header is:
+
+```text
+[magic: u32] [revision: u16] [type: u16]
+[entry_id: u64] [uptime_us: u64] [payload_len: u32]
+[store_id: u16] [segment_slot: u16] [segment_generation: u64]
+```
+
+It is followed by the payload, a CRC32 over header and payload, and zero
+padding to a four-byte boundary. Binding every entry to the random non-zero
+16-bit store ID and segment generation prevents recycled cluster garbage and
+stale data from an older use of the same slot from being recovered as current
+history.
+
+Entry IDs are `(boot_counter << 40) | sequence`. The persisted upper 24-bit
+boot counter increments during `init()`. The lower 40-bit sequence begins at
+one on each boot and advances for each reserved append. Every entry also stores
+the 64-bit value returned by `esp_timer_get_time()` in microseconds.
+
+Application entry types must be below `0xfff0`; the upper range is reserved.
+`init()` appends a boot event. When configured and available, a new ESP-IDF
+flash coredump is streamed into that boot event in bounded chunks.
+
+Small entries are batched until `flush_write()` or `force_flush=true`. Entries
+larger than the configured write buffer stream directly and are synced before
+returning. `flush_write()` syncs entry data before checkpointing the manifest.
+
+## Segment layout
+
+Each fixed-size data file contains:
+
+```text
+├── segment header slot 0: 4096 B
+├── segment header slot 1: 4096 B
+├── sequential entry area
+├── reserved sparse index, one item per 64 entries
+├── sealed footer slot 0: 4096 B
+└── sealed footer slot 1: 4096 B
+```
+
+An open segment is recovered by scanning only its generation-matched,
+CRC-valid entry run. A sealed segment normally loads from its footer after the
+footer and sparse-index CRC both validate; a torn index falls back to scanning
+and reconstruction. The manifest is a boot accelerator and durable retirement
+checkpoint; segment headers, footers, generations, indexes, and entry CRCs
+remain independently validated.
+
+## Manifest and time anchors
+
+`manifest.db` contains two rotating, CRC-protected superblock slots followed by
+a fixed ring of 512-byte time-anchor slots. Superblocks persist the store
+identity, immutable geometry, boot/entry counters, segment generations,
+retention floor, time-anchor ring state, and coredump fingerprint.
+
+Time anchors live only in the manifest, not in data segments:
+
+```c++
+on9rstore_def::time_anchor anchor = {
+    .source_mask = on9rstore_def::TIME_SOURCE_GPS |
+                   on9rstore_def::TIME_SOURCE_NTP,
+    .source_count = 2,
+    .quality = on9rstore_def::TIME_ANCHOR_QUALITY_CONFIRMED,
+    .flags = on9rstore_def::TIME_ANCHOR_FLAG_CONSENSUS,
+    .monotonic_us = measurement_uptime_us,
+    .utc_us = measurement_utc_us,
+    .uncertainty_us = estimated_error_us,
+    .supersedes_sequence = 0,
+};
+ESP_ERROR_CHECK(store.append_time_anchor(anchor));
+```
+
+The caller must validate clock samples and submit an accepted model commit,
+including source mask, source count, quality, flags, measurement monotonic
+instant, UTC, uncertainty, and optional superseded sequence. `on9rstore`
+validates the representation and commit ordering, but it does not decide
+whether GPS, NTP, cellular, RTC, or another source is trustworthy.
+
+Time anchors support deriving wall time for entries created before the clock
+became known without rewriting those entries. Entry ID and monotonic uptime
+remain the authoritative order.
+
+## Durability limits
+
+Contiguous preallocation improves locality, prevents later fragmentation, and
+avoids FAT-chain growth during ordinary appends. It also avoids interpreting
+uninitialised allocated clusters by requiring valid store identity,
+generation, structure bounds, and CRC before accepting persisted data.
+
+It does not make FAT or SD media transactional. `fsync()` can still update
+directory metadata, and a card controller may cache or reorder its internal
+flash writes. Power-cut validation therefore requires deterministic
+write/sync fault injection and real-media testing; a successful firmware build
+alone is not evidence of end-to-end sudden-power-loss safety. A future
+`esp_jrnl` integration remains a separate task.

@@ -461,28 +461,11 @@ esp_err_t on9rstore::append_coredump_entry_unsafe(
             sizeof(event));
     }
 
-    uint8_t chunk[256] = {};
-    size_t remaining = coredump_size;
-    size_t source_offset = partition_offset;
-    uint64_t destination_offset =
-        entry_offset + sizeof(header) + sizeof(event);
-    while (ret == ESP_OK && remaining > 0) {
-        const size_t chunk_len =
-            remaining < sizeof(chunk) ? remaining : sizeof(chunk);
-        ret = esp_partition_read(
-            partition, source_offset, chunk, chunk_len);
-        if (ret == ESP_OK) {
-            ret = write_exact_fd(
-                writer_fd, segment_file_size,
-                destination_offset, chunk, chunk_len);
-        }
-        if (ret == ESP_OK) {
-            entry_crc =
-                calc_crc32_update(entry_crc, chunk, chunk_len);
-            source_offset += chunk_len;
-            destination_offset += chunk_len;
-            remaining -= chunk_len;
-        }
+    if (ret == ESP_OK) {
+        ret = stream_coredump_payload_unsafe(
+            partition, partition_offset, coredump_size,
+            entry_offset + sizeof(header) + sizeof(event),
+            &entry_crc);
     }
 
     if (ret == ESP_OK) {
@@ -506,6 +489,52 @@ esp_err_t on9rstore::append_coredump_entry_unsafe(
     (void)coredump_size;
     (void)coredump_crc;
     (void)base_event;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
+esp_err_t on9rstore::stream_coredump_payload_unsafe(
+    const void *partition_ptr, size_t partition_offset,
+    size_t coredump_size, uint64_t destination_offset,
+    uint32_t *entry_crc) const
+{
+#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH
+    if (partition_ptr == nullptr || entry_crc == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const auto *partition =
+        static_cast<const esp_partition_t *>(partition_ptr);
+    uint8_t chunk[256] = {};
+    size_t remaining = coredump_size;
+    while (remaining > 0) {
+        const size_t chunk_len =
+            remaining < sizeof(chunk) ? remaining : sizeof(chunk);
+        esp_err_t ret = esp_partition_read(
+            partition, partition_offset, chunk, chunk_len);
+        if (ret == ESP_OK) {
+            ret = write_exact_fd(
+                writer_fd, segment_file_size,
+                destination_offset, chunk, chunk_len);
+        }
+        if (ret != ESP_OK) {
+            return ret;
+        }
+
+        *entry_crc =
+            calc_crc32_update(*entry_crc, chunk, chunk_len);
+        partition_offset += chunk_len;
+        destination_offset += chunk_len;
+        remaining -= chunk_len;
+    }
+
+    return ESP_OK;
+#else
+    (void)partition_ptr;
+    (void)partition_offset;
+    (void)coredump_size;
+    (void)destination_offset;
+    (void)entry_crc;
     return ESP_ERR_NOT_SUPPORTED;
 #endif
 }

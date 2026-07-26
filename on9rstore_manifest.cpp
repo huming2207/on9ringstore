@@ -58,7 +58,8 @@ esp_err_t on9rstore::initialise_manifest_superblock()
     state.revision = on9rstore_def::manifest_revision;
     state.size = sizeof(state);
     state.store_id = new_store_id;
-    state.state = on9rstore_def::manifest_state_provisioning;
+    state.state =
+        on9rstore_def::manifest_state_provisioning_owned;
     state.segment_count = CONFIG_ON9STORE_SPARSE_FILE_CNT;
     state.segment_size = CONFIG_ON9RSTORE_SPARSE_FILE_SIZE;
     state.time_anchor_count = CONFIG_ON9RSTORE_TIME_ANCHOR_CNT;
@@ -117,7 +118,12 @@ esp_err_t on9rstore::write_initial_manifest_copies()
 
 esp_err_t on9rstore::create_manifest()
 {
-    esp_err_t ret = initialise_manifest_superblock();
+    esp_err_t ret = verify_new_store_namespace_empty();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = initialise_manifest_superblock();
     if (ret != ESP_OK) {
         return ret;
     }
@@ -163,8 +169,18 @@ bool on9rstore::is_manifest_superblock_valid(
         return false;
     }
 
-    if (candidate.state != on9rstore_def::manifest_state_provisioning &&
+    if (candidate.state !=
+            on9rstore_def::manifest_state_provisioning_owned &&
         candidate.state != on9rstore_def::manifest_state_ready) {
+        return false;
+    }
+    if (candidate.state == on9rstore_def::manifest_state_ready &&
+        (candidate.active_segment_generation == 0 ||
+         candidate.next_segment_generation <=
+             candidate.active_segment_generation ||
+         candidate.oldest_segment_generation == 0 ||
+         candidate.oldest_segment_generation >
+             candidate.active_segment_generation)) {
         return false;
     }
 

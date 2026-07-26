@@ -81,7 +81,10 @@ private: // Manifest operations
 
 private: // Segment operations
     esp_err_t provision_all_segments();
-    esp_err_t provision_one_segment(uint32_t slot);
+    esp_err_t provision_one_segment(uint32_t slot, bool *active_found);
+    esp_err_t resume_provisioning_segment(int segment_fd, uint32_t slot,
+                                          bool *active_found);
+    esp_err_t finish_segment_provisioning(bool active_found);
     esp_err_t initialise_empty_segment(int segment_fd, uint32_t slot);
     esp_err_t recover_all_segments();
     esp_err_t recover_one_segment(uint32_t slot);
@@ -104,6 +107,9 @@ private: // Segment operations
     esp_err_t load_segment_footer(int segment_fd,
                                   const on9rstore_def::segment_header &header,
                                   on9rstore_def::segment_footer *footer_out) const;
+    esp_err_t validate_segment_index(
+        int segment_fd, const on9rstore_def::segment_header &header,
+        const on9rstore_def::segment_footer &footer) const;
     esp_err_t scan_segment_entries(int segment_fd,
                                    const on9rstore_def::segment_header &header,
                                    segment_descriptor *descriptor_out,
@@ -130,6 +136,9 @@ private: // Entry operations; write_lock must be held
     esp_err_t calculate_coredump_crc_unsafe(
         const void *partition, size_t partition_offset, size_t coredump_size,
         uint32_t *crc_out) const;
+    esp_err_t stream_coredump_payload_unsafe(
+        const void *partition, size_t partition_offset, size_t coredump_size,
+        uint64_t destination_offset, uint32_t *entry_crc) const;
     esp_err_t append_entry_unsafe(uint16_t type, const uint8_t *payload,
                                   uint32_t payload_len,
                                   on9rstore_def::entry_header *entry_info_out,
@@ -163,6 +172,7 @@ private: // File operations
     esp_err_t build_manifest_path();
     esp_err_t build_data_path(uint32_t slot, char *path_out,
                               size_t path_out_len) const;
+    esp_err_t verify_new_store_namespace_empty() const;
     esp_err_t provision_contiguous_file(const char *path, uint64_t size,
                                         bool *created_out) const;
     esp_err_t validate_contiguous_file(const char *path, uint64_t size) const;
@@ -176,6 +186,7 @@ private: // File operations
     void close_reader_segment();
     void close_writer_segment();
     void close_storage_unsafe();
+    static bool is_data_file_name(const char *name);
 
 private: // Locking and utilities
     esp_err_t acquire_operation_lock(uint32_t timeout_ticks) const;
