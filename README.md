@@ -70,6 +70,402 @@ dedicated FreeRTOS mutexes. A reader mutex is allocated for the public query
 path; initial recovery is performed exclusively before `init()` publishes the
 store.
 
+## Revision-4 on-disk byte and bit layout
+
+All persisted structures are packed without implicit padding. Multi-byte
+integers are stored in the ESP target's little-endian byte order. Offsets below
+are byte offsets from the beginning of the enclosing file or structure.
+
+The store is a directory of one manifest plus a fixed number of reusable
+physical segment slots:
+
+```text
+<FAT base path>/
+│
+├── manifest.db             fixed manifest and time-anchor ring
+│
+├── data_0.db               physical segment slot 0
+├── data_1.db               physical segment slot 1
+├── ...
+└── data_<C-1>.db           physical segment slot C-1
+
+C = manifest.segment_count
+  = CONFIG_ON9STORE_SPARSE_FILE_CNT when a new store is created
+```
+
+The numeric filename is only a physical slot. Chronological order is:
+
+```text
+segment_generation first, then entry_id
+```
+
+### `manifest.db`
+
+For `A = manifest.time_anchor_count`:
+
+```text
+manifest.db total size = 8192 + A * 512 bytes
+
+file offset
+
+0x000000  +----------------------------------------------------------+
+          | superblock slot 0                              4096 bytes |
+          |   132-byte manifest_superblock                            |
+          |   3964-byte uninterpreted slot tail                       |
+0x001000  +----------------------------------------------------------+
+          | superblock slot 1                              4096 bytes |
+          |   132-byte manifest_superblock                            |
+          |   3964-byte uninterpreted slot tail                       |
+0x002000  +----------------------------------------------------------+
+          | time-anchor slot 0                              512 bytes |
+          |   76-byte time_anchor_entry                               |
+          |   436-byte uninterpreted slot tail                        |
+0x002200  +----------------------------------------------------------+
+          | time-anchor slot 1                              512 bytes |
+0x002400  +----------------------------------------------------------+
+          | ...                                                      |
+          +----------------------------------------------------------+
+          | time-anchor slot A-1                            512 bytes |
+          +----------------------------------------------------------+
+          end offset = 0x002000 + A * 512
+```
+
+Only the structure at the beginning of each fixed slot is meaningful. Slot
+tails are not required to be zero and may contain recycled FAT-cluster bytes.
+
+The two superblock slots rotate by generation:
+
+```text
+slot = superblock.generation % 2
+```
+
+The newest CRC-valid generation is authoritative.
+
+#### `manifest_superblock` — 132 bytes
+
+```text
+byte range    size   field
+
++0x00..0x03     4    magic = 0x39534d52, bytes "RMS9"
++0x04..0x05     2    revision = 4
++0x06..0x07     2    size = 132
++0x08..0x0f     8    generation
++0x10..0x11     2    store_id
++0x12..0x13     2    state
++0x14..0x17     4    segment_count
++0x18..0x1f     8    segment_size
++0x20..0x23     4    time_anchor_count
++0x24..0x27     4    time_anchor_slot_size = 512
++0x28..0x2b     4    sparse_index_stride = 64
++0x2c..0x2f     4    active_slot
++0x30..0x37     8    active_segment_generation
++0x38..0x3f     8    next_segment_generation
++0x40..0x47     8    oldest_segment_generation
++0x48..0x4b     4    boot_counter; only low 24 bits are valid
++0x4c..0x4f     4    reserved
++0x50..0x57     8    next_entry_sequence; only low 40 bits are valid
++0x58..0x5f     8    newest_entry_id
++0x60..0x67     8    used_size
++0x68..0x6b     4    time_anchor_write_index
++0x6c..0x6f     4    time_anchor_used
++0x70..0x77     8    next_time_anchor_sequence
++0x78..0x7b     4    coredump_crc32
++0x7c..0x7f     4    coredump_size
++0x80..0x83     4    checksum
+```
+
+Manifest state values:
+
+```text
+0x7001  provisioning_unverified; legacy state, rejected
+0x7002  ready
+0x7003  provisioning_owned; namespace preflight completed
+```
+
+`checksum` covers all 132 bytes with the checksum field treated as zero.
+
+#### `time_anchor_entry` — 76 bytes inside each 512-byte slot
+
+The public `time_anchor` argument is converted into this packed persisted
+structure:
+
+```text
+byte range    size   field
+
++0x00..0x03     4    magic = 0x39415452, bytes "RTA9"
++0x04..0x05     2    revision = 1
++0x06..0x07     2    size = 76
++0x08..0x09     2    store_id
++0x0a            1    source_count
++0x0b            1    quality
++0x0c..0x0d      2    flags
++0x0e..0x0f      2    reserved
++0x10..0x13      4    source_mask
++0x14..0x17      4    boot_counter
++0x18..0x1f      8    sequence
++0x20..0x27      8    monotonic_us
++0x28..0x2f      8    utc_us
++0x30..0x37      8    uncertainty_us
++0x38..0x3f      8    max_durable_entry_id
++0x40..0x47      8    replace_sequence; 0 means no explicit replacement
++0x48..0x4b      4    checksum
+```
+
+Time-source bit mask:
+
+```text
+source_mask, uint32_t
+
+ bit 31                                      bit 6  5       4      3    2       1    0
++------------------------------------------------+-------+------+---+--------+----+---+
+| must be zero                                   |SERVER |MANUAL|RTC|CELLULAR|NTP |GPS|
+|                                                |ESTIMATE|     |   |        |    |   |
++------------------------------------------------+-------+------+---+--------+----+---+
+```
+
+Time-anchor flags:
+
+```text
+flags, uint16_t
+
+ bit 15                              bit 3  2          1    0
++-----------------------------------------+----------+----+---------+
+| must be zero                            |CONTINUITY|PPS |CONSENSUS|
++-----------------------------------------+----------+----+---------+
+```
+
+Quality values:
+
+```text
+0  provisional
+1  confirmed
+```
+
+`checksum` covers all 76 bytes with the checksum field treated as zero.
+
+### Each `data_N.db` segment file
+
+Let:
+
+```text
+S = segment_size
+  = CONFIG_ON9RSTORE_SPARSE_FILE_SIZE for a new store
+  = the persisted manifest value for an existing store
+
+H = 8192 bytes of replicated headers
+F = 8192 bytes of replicated footers
+
+available      = S - H - F
+max_entries    = floor(available / 44)
+index_capacity = floor(max_entries / 64) + 1
+index_size     = align_up(index_capacity * 24, 4096)
+index_start    = S - F - index_size
+data_start     = H
+data_end       = index_start
+```
+
+The exact physical layout is:
+
+```text
+file offset
+
+0x000000  +----------------------------------------------------------+
+          | segment-header slot 0                          4096 bytes |
+          |   68-byte segment_header                                  |
+          |   4028-byte uninterpreted slot tail                       |
+0x001000  +----------------------------------------------------------+
+          | segment-header slot 1                          4096 bytes |
+          |   68-byte segment_header                                  |
+          |   4028-byte uninterpreted slot tail                       |
+0x002000  +----------------------------------------------------------+ data_start
+          |                                                          |
+          | sequential, four-byte-aligned entries                    |
+          |                                                          |
+          | unused tail of entry region after the last valid entry   |
+index_   +----------------------------------------------------------+ data_end
+start     | sparse-index reservation                                  |
+          |   index_count * 24 meaningful bytes from its beginning   |
+          |   remainder is uninterpreted/stale                        |
+S-0x2000 +----------------------------------------------------------+
+          | sealed-footer slot 0                           4096 bytes |
+          |   72-byte segment_footer                                  |
+          |   4024-byte uninterpreted slot tail                       |
+S-0x1000 +----------------------------------------------------------+
+          | sealed-footer slot 1                           4096 bytes |
+          |   72-byte segment_footer                                  |
+          |   4024-byte uninterpreted slot tail                       |
+S         +----------------------------------------------------------+
+```
+
+For the default `S = 1 MiB = 0x100000`:
+
+```text
+0x000000..0x000fff   header slot 0
+0x001000..0x001fff   header slot 1
+0x002000..0x0fafff   entry area          1,019,904 bytes
+0x0fb000..0x0fdfff   sparse-index area      12,288 bytes
+0x0fe000..0x0fefff   footer slot 0
+0x0ff000..0x0fffff   footer slot 1
+
+calculated index_capacity = 367 sparse-index entries
+```
+
+#### `segment_header` — 68 bytes
+
+```text
+byte range    size   field
+
++0x00..0x03     4    magic = 0x39485352, bytes "RSH9"
++0x04..0x05     2    revision = 1
++0x06..0x07     2    size = 68
++0x08..0x09     2    store_id
++0x0a..0x0b     2    state
++0x0c..0x0f     4    physical slot number
++0x10..0x17     8    generation
++0x18..0x1f     8    segment_size
++0x20..0x27     8    data_start
++0x28..0x2f     8    data_end
++0x30..0x37     8    index_start
++0x38..0x3b     4    index_capacity
++0x3c..0x3f     4    index_stride = 64
++0x40..0x43     4    checksum
+```
+
+Segment-header state values:
+
+```text
+0x7100  empty; generation must be 0
+0x7101  active generation; sealed status is established by a valid footer
+```
+
+`checksum` covers all 68 bytes with the checksum field treated as zero.
+
+#### One variable-length data entry
+
+```text
+entry file offset E
+
+E+0x00  +----------------------------------------------------------+
+        | entry_header                                      40 bytes |
+E+0x28  +----------------------------------------------------------+
+        | payload                                         len bytes |
+        +----------------------------------------------------------+
+        | entry CRC32                                       4 bytes |
+        +----------------------------------------------------------+
+        | zero padding                                    0..3 bytes|
+E+size  +----------------------------------------------------------+
+
+entry_size = align_up(40 + len + 4, 4)
+CRC covers = entry_header + payload
+CRC excludes alignment padding
+```
+
+`entry_header` byte layout:
+
+```text
+byte range    size   field
+
++0x00..0x03     4    magic = 0x39525352, bytes "RSR9"
++0x04..0x05     2    revision = 4
++0x06..0x07     2    type
++0x08..0x0f     8    entry_id
++0x10..0x17     8    uptime_us from esp_timer_get_time()
++0x18..0x1b     4    payload length
++0x1c..0x1d     2    store_id
++0x1e..0x1f     2    physical segment slot
++0x20..0x27     8    segment_generation
+```
+
+Entry ID bit layout:
+
+```text
+entry_id, uint64_t
+
+ bit 63                         bit 40 39                              bit 0
++-----------------------------------+--------------------------------------+
+| boot_counter, 24 bits             | per-boot append sequence, 40 bits    |
++-----------------------------------+--------------------------------------+
+
+entry_id = (boot_counter << 40) | sequence
+```
+
+Entry type namespace:
+
+```text
+0x0000..0xffef  application entry types
+0xfff0..0xffff  reserved by on9rstore
+0xfffc          corrupted-entry marker reservation
+0xffff          boot event
+```
+
+Boot-event payload:
+
+```text
++0x00..0x03   reset_reason
++0x04..0x07   coredump_len
++0x08..       raw coredump bytes, when present
+```
+
+#### `sparse_index_entry` — 24 bytes
+
+One index item is emitted for entry numbers 0, 64, 128, and so on:
+
+```text
+byte range    size   field
+
++0x00..0x07     8    entry_id
++0x08..0x0f     8    uptime_us
++0x10..0x13     4    entry file offset
++0x14..0x15     2    entry type
++0x16..0x17     2    reserved
+```
+
+Only `footer.index_count * 24` bytes at `header.index_start` are meaningful.
+
+#### `segment_footer` — 72 bytes
+
+```text
+byte range    size   field
+
++0x00..0x03     4    magic = 0x39465352, bytes "RSF9"
++0x04..0x05     2    revision = 1
++0x06..0x07     2    size = 72
++0x08..0x09     2    store_id
++0x0a..0x0b     2    state = 0x7201, sealed
++0x0c..0x0f     4    physical slot number
++0x10..0x17     8    generation
++0x18..0x1f     8    first_entry_id
++0x20..0x27     8    last_entry_id
++0x28..0x2f     8    entry_count
++0x30..0x37     8    data_end; byte after the last sealed entry
++0x38..0x3b     4    index_count
++0x3c..0x3f     4    index_stride = 64
++0x40..0x43     4    index_checksum
++0x44..0x47     4    footer checksum
+```
+
+Checksum coverage:
+
+```text
+index_checksum  CRC32 of exactly index_count * 24 index bytes
+footer checksum CRC32 of all 72 footer bytes with footer checksum set to zero
+```
+
+### CRC32 convention
+
+Every CRC32 above uses:
+
+```text
+reflected polynomial  0xedb88320
+initial value         0xffffffff
+final operation       bitwise inversion
+reference vector      CRC32("123456789") = 0xcbf43926
+```
+
+The 256-entry runtime lookup table is generated at compile time with
+`constexpr`; it occupies 1024 bytes of read-only program storage and requires
+no runtime initialization or heap memory.
+
 ## Entries and rotation
 
 Data files contain sorted append runs. Entries in one generation are written
