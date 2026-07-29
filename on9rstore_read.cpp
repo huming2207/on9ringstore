@@ -35,13 +35,14 @@ esp_err_t on9rstore::acquire_read_operation_locks(uint32_t timeout_ticks) const
 void on9rstore::snapshot_read_state_unsafe()
 {
     memcpy(read_segments.get(), segments.get(), sizeof(segment_descriptor) * segment_count);
-    memcpy(read_sparse_index.get(), sparse_index.get(), sizeof(on9rstore_def::sparse_index_entry) * sparse_index_count);
+    memcpy(read_active_sparse_index.get(), sparse_index.get(), sizeof(on9rstore_def::sparse_index_entry) * sparse_index_count);
     if (write_buf_pos > 0) {
         memcpy(read_buf.get(), write_buf.get(), write_buf_pos);
     }
 
     read_active_segment = active_segment;
-    read_sparse_index_count = sparse_index_count;
+    read_sparse_index_count = 0;
+    read_active_sparse_index_count = sparse_index_count;
     read_buf_pos = write_buf_pos;
     read_buf_offset = write_buf_offset;
 }
@@ -86,9 +87,13 @@ esp_err_t on9rstore::load_read_sparse_index(const segment_descriptor &descriptor
 {
     if (!descriptor.sealed) {
         if (descriptor.slot != read_active_segment.slot || descriptor.generation != read_active_segment.generation ||
-            descriptor.index_count != read_sparse_index_count) {
+            descriptor.index_count != read_active_sparse_index_count) {
             return ESP_ERR_INVALID_STATE;
         }
+
+        memcpy(read_sparse_index.get(), read_active_sparse_index.get(),
+               sizeof(on9rstore_def::sparse_index_entry) * read_active_sparse_index_count);
+        read_sparse_index_count = read_active_sparse_index_count;
         return ESP_OK;
     }
 
@@ -135,17 +140,22 @@ bool on9rstore::is_read_sparse_index_valid(const segment_descriptor &descriptor,
     }
 
     uint64_t previous_id = 0;
+    uint64_t previous_uptime_us = 0;
     uint32_t previous_offset = 0;
     for (uint32_t idx = 0; idx < read_sparse_index_count; idx += 1) {
         const on9rstore_def::sparse_index_entry &entry = read_sparse_index[idx];
+        const uint32_t entry_boot_counter = get_entry_boot_counter(entry.entry_id);
+        const uint32_t previous_boot_counter = get_entry_boot_counter(previous_id);
         if (entry.reserved != 0 || entry.entry_id < descriptor.first_entry_id || entry.entry_id > descriptor.last_entry_id ||
             entry.offset < header.data_start || entry.offset >= descriptor.data_end ||
             entry.offset % on9rstore_def::entry_alignment != 0 ||
-            (idx > 0 && (entry.entry_id <= previous_id || entry.offset <= previous_offset))) {
+            (idx > 0 && (entry.entry_id <= previous_id || entry.offset <= previous_offset ||
+                         (entry_boot_counter == previous_boot_counter && entry.uptime_us < previous_uptime_us)))) {
             return false;
         }
 
         previous_id = entry.entry_id;
+        previous_uptime_us = entry.uptime_us;
         previous_offset = entry.offset;
     }
 
@@ -192,6 +202,27 @@ void on9rstore::find_read_start(uint64_t entry_id, const on9rstore_def::segment_
     while (low < high) {
         const uint32_t middle = low + (high - low) / 2;
         if (read_sparse_index[middle].entry_id <= entry_id) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+
+    const uint32_t selected = low == 0 ? 0 : low - 1;
+    *offset_out = read_sparse_index_count == 0 ? header.data_start : read_sparse_index[selected].offset;
+    *index_entry_out = read_sparse_index_count == 0 ? on9rstore_def::sparse_index_entry{} : read_sparse_index[selected];
+}
+
+void on9rstore::find_boot_read_start(uint32_t boot_counter, uint64_t uptime_us, const on9rstore_def::segment_header &header,
+                                     uint64_t *offset_out, on9rstore_def::sparse_index_entry *index_entry_out) const
+{
+    uint32_t low = 0;
+    uint32_t high = read_sparse_index_count;
+    while (low < high) {
+        const uint32_t middle = low + (high - low) / 2;
+        const on9rstore_def::sparse_index_entry &entry = read_sparse_index[middle];
+        const uint32_t entry_boot_counter = get_entry_boot_counter(entry.entry_id);
+        if (entry_boot_counter < boot_counter || (entry_boot_counter == boot_counter && entry.uptime_us <= uptime_us)) {
             low = middle + 1;
         } else {
             high = middle;
@@ -353,6 +384,66 @@ esp_err_t on9rstore::read_matching_entry(const segment_descriptor &descriptor, c
     return ESP_ERR_NOT_FOUND;
 }
 
+esp_err_t on9rstore::read_matching_boot_entry(const segment_descriptor &descriptor, const on9rstore_def::segment_header &header,
+                                              const on9rstore_def::boot_uptime_range_cursor &cursor, uint64_t first_entry_id,
+                                              bool use_uptime_start, uint8_t *payload_out, size_t payload_out_len,
+                                              on9rstore_def::entry_header *entry_info_out)
+{
+    uint64_t offset = 0;
+    on9rstore_def::sparse_index_entry start_index = {};
+    if (use_uptime_start) {
+        find_boot_read_start(cursor.boot_counter, cursor.first_uptime_us, header, &offset, &start_index);
+    } else {
+        find_read_start(first_entry_id, header, &offset, &start_index);
+    }
+
+    uint64_t previous_id = 0;
+    uint64_t previous_uptime_us = 0;
+    bool first_scanned = true;
+    while (offset < descriptor.data_end) {
+        on9rstore_def::entry_header entry = {};
+        uint64_t entry_size = 0;
+        esp_err_t ret = read_snapshot_entry_header(header, descriptor.data_end, offset, &entry, &entry_size);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+
+        const uint32_t entry_boot_counter = get_entry_boot_counter(entry.entry_id);
+        const bool matches = entry.entry_id >= first_entry_id && entry_boot_counter == cursor.boot_counter &&
+                             entry.uptime_us >= cursor.first_uptime_us && entry.uptime_us <= cursor.last_uptime_us;
+        ret = validate_snapshot_entry_payload(header, offset, entry, payload_out, payload_out_len, matches);
+        if (ret != ESP_OK && !(matches && ret == ESP_ERR_INVALID_SIZE)) {
+            return ret;
+        }
+
+        if ((first_scanned && start_index.entry_id != 0 &&
+             (entry.entry_id != start_index.entry_id || entry.uptime_us != start_index.uptime_us ||
+              entry.type != start_index.type || offset != start_index.offset)) ||
+            (previous_id != 0 && (entry.entry_id <= previous_id || (entry_boot_counter == get_entry_boot_counter(previous_id) &&
+                                                                    entry.uptime_us < previous_uptime_us)))) {
+            return ESP_ERR_INVALID_CRC;
+        }
+
+        if (matches) {
+            if (entry_info_out != nullptr) {
+                *entry_info_out = entry;
+            }
+            return ret;
+        }
+        if (entry_boot_counter > cursor.boot_counter ||
+            (entry_boot_counter == cursor.boot_counter && entry.uptime_us > cursor.last_uptime_us)) {
+            return ESP_ERR_NOT_FOUND;
+        }
+
+        first_scanned = false;
+        previous_id = entry.entry_id;
+        previous_uptime_us = entry.uptime_us;
+        offset += entry_size;
+    }
+
+    return ESP_ERR_NOT_FOUND;
+}
+
 esp_err_t on9rstore::read_entry_internal(uint64_t first_entry_id, uint64_t last_entry_id, bool exact, uint8_t *payload_out,
                                          size_t payload_out_len, on9rstore_def::entry_header *entry_info_out,
                                          uint32_t timeout_ticks)
@@ -379,6 +470,73 @@ esp_err_t on9rstore::read_entry_internal(uint64_t first_entry_id, uint64_t last_
     }
 
     close_reader_segment();
+    release_read_operation_lock();
+    return ret;
+}
+
+uint32_t on9rstore::get_entry_boot_counter(uint64_t entry_id)
+{
+    return static_cast<uint32_t>(entry_id >> 40ULL);
+}
+
+uint64_t on9rstore::get_boot_first_entry_id(uint32_t boot_counter)
+{
+    return (static_cast<uint64_t>(boot_counter) << 40ULL) | 1ULL;
+}
+
+uint64_t on9rstore::get_boot_last_entry_id(uint32_t boot_counter)
+{
+    return (static_cast<uint64_t>(boot_counter) << 40ULL) | on9rstore_def::entry_id_sequence_mask;
+}
+
+bool on9rstore::is_boot_range_cursor_valid(const on9rstore_def::boot_uptime_range_cursor &cursor)
+{
+    if (cursor.boot_counter == 0 || cursor.boot_counter > on9rstore_def::entry_id_boot_mask ||
+        cursor.first_uptime_us > cursor.last_uptime_us) {
+        return false;
+    }
+    if (cursor.next_entry_id == 0) {
+        return true;
+    }
+
+    return get_entry_boot_counter(cursor.next_entry_id) == cursor.boot_counter &&
+           cursor.next_entry_id >= get_boot_first_entry_id(cursor.boot_counter) &&
+           cursor.next_entry_id <= get_boot_last_entry_id(cursor.boot_counter);
+}
+
+esp_err_t on9rstore::read_boot_entry_internal(const on9rstore_def::boot_uptime_range_cursor &cursor, uint8_t *payload_out,
+                                              size_t payload_out_len, on9rstore_def::entry_header *entry_info_out,
+                                              uint32_t timeout_ticks)
+{
+    esp_err_t ret = acquire_read_operation_locks(timeout_ticks);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    snapshot_read_state_unsafe();
+    xSemaphoreGive(write_lock);
+
+    ret = ESP_ERR_NOT_FOUND;
+    const uint64_t boot_last_entry_id = get_boot_last_entry_id(cursor.boot_counter);
+    uint64_t first_entry_id = cursor.next_entry_id == 0 ? get_boot_first_entry_id(cursor.boot_counter) : cursor.next_entry_id;
+    bool use_uptime_start = cursor.next_entry_id == 0;
+    segment_descriptor descriptor = {};
+    while (find_read_segment(first_entry_id, boot_last_entry_id, false, &descriptor)) {
+        on9rstore_def::segment_header header = {};
+        ret = prepare_read_segment(descriptor, &header);
+        if (ret == ESP_OK) {
+            ret = read_matching_boot_entry(descriptor, header, cursor, first_entry_id, use_uptime_start, payload_out,
+                                           payload_out_len, entry_info_out);
+        }
+        close_reader_segment();
+        if (ret != ESP_ERR_NOT_FOUND || descriptor.last_entry_id >= boot_last_entry_id) {
+            break;
+        }
+
+        first_entry_id = descriptor.last_entry_id + 1;
+        use_uptime_start = cursor.next_entry_id == 0;
+    }
+
     release_read_operation_lock();
     return ret;
 }
@@ -422,6 +580,41 @@ esp_err_t on9rstore::read_next_entry(on9rstore_def::entry_range_cursor *cursor, 
         *entry_info_out = entry;
     }
     if (entry.entry_id >= cursor->last_entry_id || entry.entry_id == UINT64_MAX) {
+        cursor->finished = true;
+    } else {
+        cursor->next_entry_id = entry.entry_id + 1;
+    }
+    return ESP_OK;
+}
+
+esp_err_t on9rstore::read_next_entry_by_uptime(on9rstore_def::boot_uptime_range_cursor *cursor, uint8_t *payload_out,
+                                               size_t payload_out_len, on9rstore_def::entry_header *entry_info_out,
+                                               uint32_t timeout_ticks)
+{
+    if (cursor == nullptr || (payload_out == nullptr && payload_out_len > 0) || !is_boot_range_cursor_valid(*cursor)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (cursor->finished) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    on9rstore_def::entry_header entry = {};
+    esp_err_t ret = read_boot_entry_internal(*cursor, payload_out, payload_out_len, &entry, timeout_ticks);
+    if (ret == ESP_ERR_NOT_FOUND) {
+        cursor->finished = true;
+        return ret;
+    }
+    if (ret != ESP_OK) {
+        if (entry_info_out != nullptr && ret == ESP_ERR_INVALID_SIZE && entry.entry_id != 0) {
+            *entry_info_out = entry;
+        }
+        return ret;
+    }
+
+    if (entry_info_out != nullptr) {
+        *entry_info_out = entry;
+    }
+    if (entry.entry_id >= get_boot_last_entry_id(cursor->boot_counter)) {
         cursor->finished = true;
     } else {
         cursor->next_entry_id = entry.entry_id + 1;

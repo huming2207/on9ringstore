@@ -32,6 +32,9 @@ public:
                          on9rstore_def::entry_header *entry_info_out = nullptr, uint32_t timeout_ticks = portMAX_DELAY);
     esp_err_t read_next_entry(on9rstore_def::entry_range_cursor *cursor, uint8_t *payload_out, size_t payload_out_len,
                               on9rstore_def::entry_header *entry_info_out = nullptr, uint32_t timeout_ticks = portMAX_DELAY);
+    esp_err_t read_next_entry_by_uptime(on9rstore_def::boot_uptime_range_cursor *cursor, uint8_t *payload_out,
+                                        size_t payload_out_len, on9rstore_def::entry_header *entry_info_out = nullptr,
+                                        uint32_t timeout_ticks = portMAX_DELAY);
     esp_err_t flush_write(uint32_t timeout_ticks = portMAX_DELAY);
     esp_err_t deinit(bool force = false);
 
@@ -156,9 +159,15 @@ private: // Read operations
     bool is_read_sparse_index_valid(const segment_descriptor &descriptor, const on9rstore_def::segment_header &header) const;
     void find_read_start(uint64_t entry_id, const on9rstore_def::segment_header &header, uint64_t *offset_out,
                          on9rstore_def::sparse_index_entry *index_entry_out) const;
+    void find_boot_read_start(uint32_t boot_counter, uint64_t uptime_us, const on9rstore_def::segment_header &header,
+                              uint64_t *offset_out, on9rstore_def::sparse_index_entry *index_entry_out) const;
     esp_err_t read_matching_entry(const segment_descriptor &descriptor, const on9rstore_def::segment_header &header,
                                   uint64_t first_entry_id, uint64_t last_entry_id, bool exact, uint8_t *payload_out,
                                   size_t payload_out_len, on9rstore_def::entry_header *entry_info_out);
+    esp_err_t read_matching_boot_entry(const segment_descriptor &descriptor, const on9rstore_def::segment_header &header,
+                                       const on9rstore_def::boot_uptime_range_cursor &cursor, uint64_t first_entry_id,
+                                       bool use_uptime_start, uint8_t *payload_out, size_t payload_out_len,
+                                       on9rstore_def::entry_header *entry_info_out);
     esp_err_t read_snapshot_bytes(const on9rstore_def::segment_header &segment, uint64_t offset, void *buf_out, size_t len) const;
     esp_err_t read_snapshot_entry_header(const on9rstore_def::segment_header &segment, uint64_t entry_limit, uint64_t offset,
                                          on9rstore_def::entry_header *header_out, uint64_t *entry_size_out) const;
@@ -167,6 +176,13 @@ private: // Read operations
                                               size_t payload_out_len, bool copy_payload) const;
     esp_err_t read_entry_internal(uint64_t first_entry_id, uint64_t last_entry_id, bool exact, uint8_t *payload_out,
                                   size_t payload_out_len, on9rstore_def::entry_header *entry_info_out, uint32_t timeout_ticks);
+    esp_err_t read_boot_entry_internal(const on9rstore_def::boot_uptime_range_cursor &cursor, uint8_t *payload_out,
+                                       size_t payload_out_len, on9rstore_def::entry_header *entry_info_out,
+                                       uint32_t timeout_ticks);
+    static bool is_boot_range_cursor_valid(const on9rstore_def::boot_uptime_range_cursor &cursor);
+    static uint32_t get_entry_boot_counter(uint64_t entry_id);
+    static uint64_t get_boot_first_entry_id(uint32_t boot_counter);
+    static uint64_t get_boot_last_entry_id(uint32_t boot_counter);
 
 private: // File operations
     esp_err_t build_manifest_path();
@@ -216,9 +232,11 @@ private:
 
     std::unique_ptr<segment_descriptor[]> read_segments;
     std::unique_ptr<on9rstore_def::sparse_index_entry[]> read_sparse_index;
+    std::unique_ptr<on9rstore_def::sparse_index_entry[]> read_active_sparse_index;
     std::unique_ptr<uint8_t[]> read_buf;
     on9rstore_def::segment_header read_active_segment = {};
     uint32_t read_sparse_index_count = 0;
+    uint32_t read_active_sparse_index_count = 0;
     size_t read_buf_pos = 0;
     uint64_t read_buf_offset = 0;
 

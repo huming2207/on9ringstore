@@ -155,6 +155,14 @@ namespace on9rstore_def
         bool finished = false;
     };
 
+    struct boot_uptime_range_cursor {
+        uint32_t boot_counter = 0;
+        uint64_t first_uptime_us = 0;
+        uint64_t last_uptime_us = UINT64_MAX;
+        uint64_t next_entry_id = 0;
+        bool finished = false;
+    };
+
     struct ON9RSTORE_PACKED segment_footer {
         uint32_t magic;
         uint16_t revision;

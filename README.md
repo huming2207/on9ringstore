@@ -555,6 +555,29 @@ which normal appends may continue. The reader lock prevents segment retirement
 and physical-slot reuse until that individual read finishes, and
 deinitialisation waits for the same lock.
 
+`read_next_entry_by_uptime()` iterates entries from one boot and can optionally
+restrict them to an inclusive monotonic-uptime range:
+
+```c++
+on9rstore_def::boot_uptime_range_cursor cursor = {
+    .boot_counter = wanted_boot,
+    .first_uptime_us = range_start_us,
+    .last_uptime_us = range_end_us,
+};
+
+while (store.read_next_entry_by_uptime(
+           &cursor, payload, sizeof(payload), &entry) == ESP_OK) {
+    // Entries are returned in entry-ID order.
+}
+```
+
+Uptime resets at boot, so the boot counter is mandatory and must be in the
+persisted 24-bit range. Leaving the uptime bounds at their defaults
+(`0..UINT64_MAX`) iterates the entire boot. The cursor skips entry-ID gaps,
+crosses retained segment boundaries, and uses each segment's sparse uptime
+index to begin near the requested lower bound. It has the same payload-buffer,
+retry, snapshot, and `finished` behaviour as `read_next_entry()`.
+
 ## Segment layout
 
 Each fixed-size data file contains:

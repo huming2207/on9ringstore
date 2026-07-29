@@ -160,6 +160,11 @@ esp_err_t on9rstore::allocate_runtime_buffers()
         return ESP_ERR_NO_MEM;
     }
 
+    read_active_sparse_index.reset(new (std::nothrow) on9rstore_def::sparse_index_entry[sparse_index_capacity]);
+    if (read_active_sparse_index == nullptr) {
+        return ESP_ERR_NO_MEM;
+    }
+
     return ESP_OK;
 }
 
@@ -334,12 +339,14 @@ void on9rstore::reset_runtime_state()
     read_segments.reset();
     sparse_index.reset();
     read_sparse_index.reset();
+    read_active_sparse_index.reset();
     write_buf_pos = 0;
     write_buf_offset = 0;
     active_write_offset = 0;
     sparse_index_count = 0;
     sparse_index_capacity = 0;
     read_sparse_index_count = 0;
+    read_active_sparse_index_count = 0;
     read_buf_pos = 0;
     read_buf_offset = 0;
     manifest_file_size = 0;
