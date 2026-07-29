@@ -16,8 +16,7 @@ esp_err_t on9rstore::build_manifest_path()
 {
     const size_t len = strlen(file_path);
     const char *separator = len > 0 && file_path[len - 1] == '/' ? "" : "/";
-    const int result = snprintf(manifest_path, sizeof(manifest_path),
-                                "%s%smanifest.db", file_path, separator);
+    const int result = snprintf(manifest_path, sizeof(manifest_path), "%s%smanifest.db", file_path, separator);
     if (result < 0 || static_cast<size_t>(result) >= sizeof(manifest_path)) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -25,8 +24,7 @@ esp_err_t on9rstore::build_manifest_path()
     return ESP_OK;
 }
 
-esp_err_t on9rstore::build_data_path(uint32_t slot, char *path_out,
-                                     size_t path_out_len) const
+esp_err_t on9rstore::build_data_path(uint32_t slot, char *path_out, size_t path_out_len) const
 {
     if (path_out == nullptr || path_out_len == 0) {
         return ESP_ERR_INVALID_ARG;
@@ -34,8 +32,7 @@ esp_err_t on9rstore::build_data_path(uint32_t slot, char *path_out,
 
     const size_t len = strlen(file_path);
     const char *separator = len > 0 && file_path[len - 1] == '/' ? "" : "/";
-    const int result = snprintf(path_out, path_out_len, "%s%sdata_%" PRIu32 ".db",
-                                file_path, separator, slot);
+    const int result = snprintf(path_out, path_out_len, "%s%sdata_%" PRIu32 ".db", file_path, separator, slot);
     if (result < 0 || static_cast<size_t>(result) >= path_out_len) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -47,8 +44,7 @@ bool on9rstore::is_data_file_name(const char *name)
 {
     static const constexpr char prefix[] = "data_";
     static const constexpr char suffix[] = ".db";
-    if (name == nullptr ||
-        strncmp(name, prefix, sizeof(prefix) - 1) != 0) {
+    if (name == nullptr || strncmp(name, prefix, sizeof(prefix) - 1) != 0) {
         return false;
     }
 
@@ -65,8 +61,7 @@ esp_err_t on9rstore::verify_new_store_namespace_empty() const
 {
     DIR *directory = opendir(file_path);
     if (directory == nullptr) {
-        ESP_LOGE(TAG, "Manifest: opendir(%s) failed: errno=%d",
-                 file_path, errno);
+        ESP_LOGE(TAG, "Manifest: opendir(%s) failed: errno=%d", file_path, errno);
         return ESP_FAIL;
     }
 
@@ -83,8 +78,7 @@ esp_err_t on9rstore::verify_new_store_namespace_empty() const
         }
 
         if (is_data_file_name(entry->d_name)) {
-            ESP_LOGE(TAG, "Manifest: existing store file %s blocks creation",
-                     entry->d_name);
+            ESP_LOGE(TAG, "Manifest: existing store file %s blocks creation", entry->d_name);
             ret = ESP_ERR_INVALID_STATE;
             break;
         }
@@ -102,15 +96,13 @@ esp_err_t on9rstore::validate_contiguous_file(const char *path, uint64_t size) c
         return ESP_FAIL;
     }
 
-    if (!S_ISREG(file_stat.st_mode) ||
-        static_cast<uint64_t>(file_stat.st_size) != size) {
+    if (!S_ISREG(file_stat.st_mode) || static_cast<uint64_t>(file_stat.st_size) != size) {
         ESP_LOGE(TAG, "File: invalid size/type for %s", path);
         return ESP_ERR_INVALID_SIZE;
     }
 
     bool contiguous = false;
-    const esp_err_t ret =
-        esp_vfs_fat_test_contiguous_file(file_path, path, &contiguous);
+    const esp_err_t ret = esp_vfs_fat_test_contiguous_file(file_path, path, &contiguous);
     if (ret != ESP_OK || !contiguous) {
         ESP_LOGE(TAG, "File: %s is not contiguous: ret=0x%x", path, ret);
         return ret == ESP_OK ? ESP_ERR_INVALID_STATE : ret;
@@ -119,8 +111,7 @@ esp_err_t on9rstore::validate_contiguous_file(const char *path, uint64_t size) c
     return ESP_OK;
 }
 
-esp_err_t on9rstore::provision_contiguous_file(const char *path, uint64_t size,
-                                               bool *created_out) const
+esp_err_t on9rstore::provision_contiguous_file(const char *path, uint64_t size, bool *created_out) const
 {
     if (path == nullptr || created_out == nullptr || size == 0) {
         return ESP_ERR_INVALID_ARG;
@@ -138,11 +129,9 @@ esp_err_t on9rstore::provision_contiguous_file(const char *path, uint64_t size,
         return ESP_FAIL;
     }
 
-    const esp_err_t ret =
-        esp_vfs_fat_create_contiguous_file(file_path, path, size, true);
+    const esp_err_t ret = esp_vfs_fat_create_contiguous_file(file_path, path, size, true);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "File: contiguous create failed for %s: ret=0x%x errno=%d",
-                 path, ret, errno);
+        ESP_LOGE(TAG, "File: contiguous create failed for %s: ret=0x%x errno=%d", path, ret, errno);
         return ret;
     }
 
@@ -166,15 +155,12 @@ esp_err_t on9rstore::open_file(const char *path, int *fd_out) const
     return ESP_OK;
 }
 
-esp_err_t on9rstore::read_exact_fd(int file_fd, uint64_t file_size,
-                                   uint64_t offset, void *buf_out,
-                                   size_t len) const
+esp_err_t on9rstore::read_exact_fd(int file_fd, uint64_t file_size, uint64_t offset, void *buf_out, size_t len) const
 {
     if (len == 0) {
         return ESP_OK;
     }
-    if (file_fd < 0 || buf_out == nullptr || len > file_size ||
-        offset > file_size - len) {
+    if (file_fd < 0 || buf_out == nullptr || len > file_size || offset > file_size - len) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -199,15 +185,12 @@ esp_err_t on9rstore::read_exact_fd(int file_fd, uint64_t file_size,
     return ESP_OK;
 }
 
-esp_err_t on9rstore::write_exact_fd(int file_fd, uint64_t file_size,
-                                    uint64_t offset, const void *buf,
-                                    size_t len) const
+esp_err_t on9rstore::write_exact_fd(int file_fd, uint64_t file_size, uint64_t offset, const void *buf, size_t len) const
 {
     if (len == 0) {
         return ESP_OK;
     }
-    if (file_fd < 0 || buf == nullptr || len > file_size ||
-        offset > file_size - len) {
+    if (file_fd < 0 || buf == nullptr || len > file_size || offset > file_size - len) {
         return ESP_ERR_INVALID_ARG;
     }
 

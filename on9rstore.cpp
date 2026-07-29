@@ -16,9 +16,7 @@ namespace
     constexpr uint32_t make_crc32_lut_entry(uint32_t value)
     {
         for (uint8_t bit = 0; bit < 8; bit += 1) {
-            value = (value & 1U) ?
-                ((value >> 1U) ^ crc32_polynomial) :
-                (value >> 1U);
+            value = (value & 1U) ? ((value >> 1U) ^ crc32_polynomial) : (value >> 1U);
         }
 
         return value;
@@ -30,8 +28,7 @@ namespace
         constexpr crc32_lut()
         {
             for (size_t idx = 0; idx < 256; idx += 1) {
-                values[idx] =
-                    make_crc32_lut_entry(static_cast<uint32_t>(idx));
+                values[idx] = make_crc32_lut_entry(static_cast<uint32_t>(idx));
             }
         }
     };
@@ -42,8 +39,7 @@ namespace
     {
         uint32_t crc = UINT32_MAX;
         for (size_t idx = 0; idx < len; idx += 1) {
-            const uint8_t table_idx = static_cast<uint8_t>(
-                crc ^ static_cast<uint8_t>(buf[idx]));
+            const uint8_t table_idx = static_cast<uint8_t>(crc ^ static_cast<uint8_t>(buf[idx]));
             crc = crc32_table.values[table_idx] ^ (crc >> 8U);
         }
 
@@ -110,13 +106,11 @@ esp_err_t on9rstore::create_locks()
 
 esp_err_t on9rstore::validate_init_args() const
 {
-    if (file_path == nullptr || file_path[0] != '/' ||
-        cfg.write_buffer_size < on9rstore_def::min_entry_size) {
+    if (file_path == nullptr || file_path[0] != '/' || cfg.write_buffer_size < on9rstore_def::min_entry_size) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (CONFIG_ON9RSTORE_SPARSE_FILE_SIZE >
-        static_cast<uint64_t>(std::numeric_limits<off_t>::max())) {
+    if (CONFIG_ON9RSTORE_SPARSE_FILE_SIZE > static_cast<uint64_t>(std::numeric_limits<off_t>::max())) {
         return ESP_ERR_INVALID_SIZE;
     }
 
@@ -145,8 +139,7 @@ esp_err_t on9rstore::allocate_runtime_buffers()
         return ESP_ERR_NO_MEM;
     }
 
-    read_segments.reset(
-        new (std::nothrow) segment_descriptor[segment_count]);
+    read_segments.reset(new (std::nothrow) segment_descriptor[segment_count]);
     if (read_segments == nullptr) {
         return ESP_ERR_NO_MEM;
     }
@@ -157,15 +150,12 @@ esp_err_t on9rstore::allocate_runtime_buffers()
     }
 
     sparse_index_capacity = geometry.index_capacity;
-    sparse_index.reset(new (std::nothrow)
-                           on9rstore_def::sparse_index_entry[sparse_index_capacity]);
+    sparse_index.reset(new (std::nothrow) on9rstore_def::sparse_index_entry[sparse_index_capacity]);
     if (sparse_index == nullptr) {
         return ESP_ERR_NO_MEM;
     }
 
-    read_sparse_index.reset(new (std::nothrow)
-                                on9rstore_def::sparse_index_entry[
-                                    sparse_index_capacity]);
+    read_sparse_index.reset(new (std::nothrow) on9rstore_def::sparse_index_entry[sparse_index_capacity]);
     if (read_sparse_index == nullptr) {
         return ESP_ERR_NO_MEM;
     }
@@ -259,10 +249,8 @@ esp_err_t on9rstore::init()
         initialized = false;
         close_storage_unsafe();
     } else {
-        ESP_LOGI(TAG, "Init: boot=%" PRIu32 ", files=%" PRIu32
-                      ", file_size=%" PRIu64 ", anchors=%" PRIu32,
-                 state.boot_counter, segment_count, segment_file_size,
-                 time_anchor_count);
+        ESP_LOGI(TAG, "Init: boot=%" PRIu32 ", files=%" PRIu32 ", file_size=%" PRIu64 ", anchors=%" PRIu32, state.boot_counter,
+                 segment_count, segment_file_size, time_anchor_count);
     }
 
     xSemaphoreGive(lifecycle_lock);
@@ -271,8 +259,7 @@ esp_err_t on9rstore::init()
 
 esp_err_t on9rstore::acquire_operation_lock(uint32_t timeout_ticks) const
 {
-    if (lifecycle_lock == nullptr ||
-        xSemaphoreTake(lifecycle_lock, timeout_ticks) != pdTRUE) {
+    if (lifecycle_lock == nullptr || xSemaphoreTake(lifecycle_lock, timeout_ticks) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
 
@@ -431,8 +418,7 @@ uint32_t on9rstore::calc_crc32(const uint8_t *buf, size_t len)
 uint32_t on9rstore::calc_crc32_update(uint32_t crc, const uint8_t *buf, size_t len)
 {
     for (size_t idx = 0; idx < len; idx += 1) {
-        const uint8_t table_idx =
-            static_cast<uint8_t>(crc ^ buf[idx]);
+        const uint8_t table_idx = static_cast<uint8_t>(crc ^ buf[idx]);
         crc = crc32_table.values[table_idx] ^ (crc >> 8U);
     }
 

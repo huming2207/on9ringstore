@@ -40,8 +40,8 @@ namespace on9rstore_def
         TIME_SOURCE_RTC = 1UL << 3,
         TIME_SOURCE_MANUAL = 1UL << 4,
         TIME_SOURCE_SERVER_ESTIMATE = 1UL << 5,
-        TIME_SOURCE_ALL = TIME_SOURCE_GPS | TIME_SOURCE_NTP | TIME_SOURCE_CELLULAR |
-                          TIME_SOURCE_RTC | TIME_SOURCE_MANUAL | TIME_SOURCE_SERVER_ESTIMATE,
+        TIME_SOURCE_ALL = TIME_SOURCE_GPS | TIME_SOURCE_NTP | TIME_SOURCE_CELLULAR | TIME_SOURCE_RTC | TIME_SOURCE_MANUAL |
+                          TIME_SOURCE_SERVER_ESTIMATE,
     };
 
     enum time_anchor_quality : uint8_t {
@@ -179,11 +179,9 @@ namespace on9rstore_def
     static const constexpr uint16_t entry_revision = 4;
     static const constexpr uint32_t manifest_magic = 0x39534d52; // "RMS9"
     static const constexpr uint16_t manifest_revision = 4;
-    static const constexpr uint16_t manifest_state_provisioning_unverified =
-        0x7001;
+    static const constexpr uint16_t manifest_state_provisioning_unverified = 0x7001;
     static const constexpr uint16_t manifest_state_ready = 0x7002;
-    static const constexpr uint16_t manifest_state_provisioning_owned =
-        0x7003;
+    static const constexpr uint16_t manifest_state_provisioning_owned = 0x7003;
     static const constexpr uint32_t time_anchor_magic = 0x39415452; // "RTA9"
     static const constexpr uint16_t time_anchor_revision = 1;
     static const constexpr uint32_t segment_header_magic = 0x39485352; // "RSH9"
@@ -201,12 +199,10 @@ namespace on9rstore_def
     static const constexpr size_t time_anchor_slot_size = 512;
     static const constexpr size_t segment_header_slot_size = 4096;
     static const constexpr size_t segment_header_slot_count = 2;
-    static const constexpr size_t segment_header_region_size =
-        segment_header_slot_size * segment_header_slot_count;
+    static const constexpr size_t segment_header_region_size = segment_header_slot_size * segment_header_slot_count;
     static const constexpr size_t segment_footer_slot_size = 4096;
     static const constexpr size_t segment_footer_slot_count = 2;
-    static const constexpr size_t segment_footer_region_size =
-        segment_footer_slot_size * segment_footer_slot_count;
+    static const constexpr size_t segment_footer_region_size = segment_footer_slot_size * segment_footer_slot_count;
     static const constexpr size_t sparse_index_stride = 64;
     static const constexpr size_t entry_alignment = 4;
     static const constexpr size_t entry_crc_len = sizeof(uint32_t);
@@ -218,6 +214,5 @@ namespace on9rstore_def
         return (val + (align - 1)) & ~(align - 1);
     }
 
-    static constexpr size_t min_entry_size =
-        align_up(sizeof(entry_header) + entry_crc_len, entry_alignment);
+    static constexpr size_t min_entry_size = align_up(sizeof(entry_header) + entry_crc_len, entry_alignment);
 }

@@ -6,65 +6,43 @@
 
 #include "on9rstore.hpp"
 
-bool on9rstore::calculate_segment_geometry(
-    uint64_t segment_size,
-    on9rstore_def::segment_header *geometry_out) const
+bool on9rstore::calculate_segment_geometry(uint64_t segment_size, on9rstore_def::segment_header *geometry_out) const
 {
-    if (geometry_out == nullptr ||
-        segment_size > SIZE_MAX ||
-        segment_size % on9rstore_def::segment_header_slot_size != 0 ||
-        segment_size <= on9rstore_def::segment_header_region_size +
-                            on9rstore_def::segment_footer_region_size) {
+    if (geometry_out == nullptr || segment_size > SIZE_MAX || segment_size % on9rstore_def::segment_header_slot_size != 0 ||
+        segment_size <= on9rstore_def::segment_header_region_size + on9rstore_def::segment_footer_region_size) {
         return false;
     }
 
     const uint64_t available =
-        segment_size - on9rstore_def::segment_header_region_size -
-        on9rstore_def::segment_footer_region_size;
-    const uint64_t max_entries =
-        available / on9rstore_def::min_entry_size;
-    const uint64_t index_capacity =
-        max_entries / on9rstore_def::sparse_index_stride + 1;
-    const uint64_t raw_index_size =
-        index_capacity * sizeof(on9rstore_def::sparse_index_entry);
-    const uint64_t index_size = on9rstore_def::align_up(
-        static_cast<size_t>(raw_index_size),
-        on9rstore_def::segment_header_slot_size);
+        segment_size - on9rstore_def::segment_header_region_size - on9rstore_def::segment_footer_region_size;
+    const uint64_t max_entries = available / on9rstore_def::min_entry_size;
+    const uint64_t index_capacity = max_entries / on9rstore_def::sparse_index_stride + 1;
+    const uint64_t raw_index_size = index_capacity * sizeof(on9rstore_def::sparse_index_entry);
+    const uint64_t index_size =
+        on9rstore_def::align_up(static_cast<size_t>(raw_index_size), on9rstore_def::segment_header_slot_size);
 
     if (index_capacity > UINT32_MAX || index_size >= available) {
         return false;
     }
 
     geometry_out->segment_size = segment_size;
-    geometry_out->data_start =
-        on9rstore_def::segment_header_region_size;
-    geometry_out->index_start =
-        segment_size - on9rstore_def::segment_footer_region_size -
-        index_size;
+    geometry_out->data_start = on9rstore_def::segment_header_region_size;
+    geometry_out->index_start = segment_size - on9rstore_def::segment_footer_region_size - index_size;
     geometry_out->data_end = geometry_out->index_start;
-    geometry_out->index_capacity =
-        static_cast<uint32_t>(index_capacity);
-    geometry_out->index_stride =
-        on9rstore_def::sparse_index_stride;
-    return geometry_out->data_end >
-           geometry_out->data_start + on9rstore_def::min_entry_size;
+    geometry_out->index_capacity = static_cast<uint32_t>(index_capacity);
+    geometry_out->index_stride = on9rstore_def::sparse_index_stride;
+    return geometry_out->data_end > geometry_out->data_start + on9rstore_def::min_entry_size;
 }
 
-esp_err_t on9rstore::write_segment_headers(
-    int segment_fd, const on9rstore_def::segment_header &header)
+esp_err_t on9rstore::write_segment_headers(int segment_fd, const on9rstore_def::segment_header &header)
 {
     on9rstore_def::segment_header copy = header;
     copy.checksum = 0;
-    copy.checksum =
-        calc_crc32(reinterpret_cast<const uint8_t *>(&copy), sizeof(copy));
+    copy.checksum = calc_crc32(reinterpret_cast<const uint8_t *>(&copy), sizeof(copy));
 
-    for (uint32_t slot = 0;
-         slot < on9rstore_def::segment_header_slot_count; slot += 1) {
-        const uint64_t offset =
-            static_cast<uint64_t>(slot) *
-            on9rstore_def::segment_header_slot_size;
-        esp_err_t ret = write_exact_fd(segment_fd, segment_file_size,
-                                       offset, &copy, sizeof(copy));
+    for (uint32_t slot = 0; slot < on9rstore_def::segment_header_slot_count; slot += 1) {
+        const uint64_t offset = static_cast<uint64_t>(slot) * on9rstore_def::segment_header_slot_size;
+        esp_err_t ret = write_exact_fd(segment_fd, segment_file_size, offset, &copy, sizeof(copy));
         if (ret != ESP_OK) {
             return ret;
         }
@@ -78,23 +56,16 @@ esp_err_t on9rstore::write_segment_headers(
     return ESP_OK;
 }
 
-esp_err_t on9rstore::write_segment_footers(
-    int segment_fd, const on9rstore_def::segment_footer &footer)
+esp_err_t on9rstore::write_segment_footers(int segment_fd, const on9rstore_def::segment_footer &footer)
 {
     on9rstore_def::segment_footer copy = footer;
     copy.checksum = 0;
-    copy.checksum =
-        calc_crc32(reinterpret_cast<const uint8_t *>(&copy), sizeof(copy));
+    copy.checksum = calc_crc32(reinterpret_cast<const uint8_t *>(&copy), sizeof(copy));
 
-    const uint64_t footer_start =
-        segment_file_size - on9rstore_def::segment_footer_region_size;
-    for (uint32_t slot = 0;
-         slot < on9rstore_def::segment_footer_slot_count; slot += 1) {
-        const uint64_t offset =
-            footer_start + static_cast<uint64_t>(slot) *
-                               on9rstore_def::segment_footer_slot_size;
-        esp_err_t ret = write_exact_fd(segment_fd, segment_file_size,
-                                       offset, &copy, sizeof(copy));
+    const uint64_t footer_start = segment_file_size - on9rstore_def::segment_footer_region_size;
+    for (uint32_t slot = 0; slot < on9rstore_def::segment_footer_slot_count; slot += 1) {
+        const uint64_t offset = footer_start + static_cast<uint64_t>(slot) * on9rstore_def::segment_footer_slot_size;
+        esp_err_t ret = write_exact_fd(segment_fd, segment_file_size, offset, &copy, sizeof(copy));
         if (ret != ESP_OK) {
             return ret;
         }
@@ -124,8 +95,7 @@ esp_err_t on9rstore::initialise_empty_segment(int segment_fd, uint32_t slot)
     return write_segment_headers(segment_fd, header);
 }
 
-esp_err_t on9rstore::resume_provisioning_segment(
-    int segment_fd, uint32_t slot, bool *active_found)
+esp_err_t on9rstore::resume_provisioning_segment(int segment_fd, uint32_t slot, bool *active_found)
 {
     on9rstore_def::segment_header header = {};
     esp_err_t ret = load_segment_header(segment_fd, slot, &header);
@@ -141,9 +111,7 @@ esp_err_t on9rstore::resume_provisioning_segment(
     }
 
     if (slot != 0 || header.generation != 1 || *active_found) {
-        ESP_LOGE(TAG, "Provision: unexpected generation %" PRIu64
-                      " in slot %" PRIu32,
-                 header.generation, slot);
+        ESP_LOGE(TAG, "Provision: unexpected generation %" PRIu64 " in slot %" PRIu32, header.generation, slot);
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -151,8 +119,7 @@ esp_err_t on9rstore::resume_provisioning_segment(
     return write_segment_headers(segment_fd, header);
 }
 
-esp_err_t on9rstore::provision_one_segment(
-    uint32_t slot, bool *active_found)
+esp_err_t on9rstore::provision_one_segment(uint32_t slot, bool *active_found)
 {
     if (active_found == nullptr) {
         return ESP_ERR_INVALID_ARG;
@@ -167,8 +134,7 @@ esp_err_t on9rstore::provision_one_segment(
     if (state.state == on9rstore_def::manifest_state_ready) {
         return validate_contiguous_file(path, segment_file_size);
     }
-    if (state.state !=
-        on9rstore_def::manifest_state_provisioning_owned) {
+    if (state.state != on9rstore_def::manifest_state_provisioning_owned) {
         ESP_LOGE(TAG, "Provision: manifest has no namespace ownership proof");
         return ESP_ERR_INVALID_STATE;
     }
@@ -182,9 +148,7 @@ esp_err_t on9rstore::provision_one_segment(
     int segment_fd = -1;
     ret = open_file(path, &segment_fd);
     if (ret == ESP_OK) {
-        ret = created ?
-            initialise_empty_segment(segment_fd, slot) :
-            resume_provisioning_segment(segment_fd, slot, active_found);
+        ret = created ? initialise_empty_segment(segment_fd, slot) : resume_provisioning_segment(segment_fd, slot, active_found);
     }
     if (segment_fd >= 0) {
         (void)close(segment_fd);
@@ -215,8 +179,7 @@ esp_err_t on9rstore::provision_all_segments()
 {
     bool active_found = false;
     for (uint32_t slot = 0; slot < segment_count; slot += 1) {
-        esp_err_t ret =
-            provision_one_segment(slot, &active_found);
+        esp_err_t ret = provision_one_segment(slot, &active_found);
         if (ret != ESP_OK) {
             return ret;
         }
@@ -229,30 +192,22 @@ esp_err_t on9rstore::provision_all_segments()
     return finish_segment_provisioning(active_found);
 }
 
-bool on9rstore::is_segment_header_valid(
-    const on9rstore_def::segment_header &candidate, uint32_t slot) const
+bool on9rstore::is_segment_header_valid(const on9rstore_def::segment_header &candidate, uint32_t slot) const
 {
-    if (candidate.magic != on9rstore_def::segment_header_magic ||
-        candidate.revision != on9rstore_def::segment_header_revision ||
-        candidate.size != sizeof(candidate) ||
-        candidate.store_id != store_id || candidate.slot != slot ||
-        candidate.segment_size != segment_file_size ||
-        candidate.index_stride != on9rstore_def::sparse_index_stride) {
+    if (candidate.magic != on9rstore_def::segment_header_magic || candidate.revision != on9rstore_def::segment_header_revision ||
+        candidate.size != sizeof(candidate) || candidate.store_id != store_id || candidate.slot != slot ||
+        candidate.segment_size != segment_file_size || candidate.index_stride != on9rstore_def::sparse_index_stride) {
         return false;
     }
 
-    if ((candidate.generation == 0 &&
-         candidate.state != on9rstore_def::segment_state_empty) ||
-        (candidate.generation != 0 &&
-         candidate.state != on9rstore_def::segment_state_active)) {
+    if ((candidate.generation == 0 && candidate.state != on9rstore_def::segment_state_empty) ||
+        (candidate.generation != 0 && candidate.state != on9rstore_def::segment_state_active)) {
         return false;
     }
 
     on9rstore_def::segment_header geometry = {};
-    if (!calculate_segment_geometry(segment_file_size, &geometry) ||
-        candidate.data_start != geometry.data_start ||
-        candidate.data_end != geometry.data_end ||
-        candidate.index_start != geometry.index_start ||
+    if (!calculate_segment_geometry(segment_file_size, &geometry) || candidate.data_start != geometry.data_start ||
+        candidate.data_end != geometry.data_end || candidate.index_start != geometry.index_start ||
         candidate.index_capacity != geometry.index_capacity) {
         return false;
     }
@@ -260,13 +215,10 @@ bool on9rstore::is_segment_header_valid(
     on9rstore_def::segment_header copy = candidate;
     const uint32_t expected_crc = copy.checksum;
     copy.checksum = 0;
-    return calc_crc32(reinterpret_cast<const uint8_t *>(&copy),
-                      sizeof(copy)) == expected_crc;
+    return calc_crc32(reinterpret_cast<const uint8_t *>(&copy), sizeof(copy)) == expected_crc;
 }
 
-esp_err_t on9rstore::load_segment_header(
-    int segment_fd, uint32_t slot,
-    on9rstore_def::segment_header *header_out) const
+esp_err_t on9rstore::load_segment_header(int segment_fd, uint32_t slot, on9rstore_def::segment_header *header_out) const
 {
     if (header_out == nullptr) {
         return ESP_ERR_INVALID_ARG;
@@ -274,22 +226,15 @@ esp_err_t on9rstore::load_segment_header(
 
     bool found = false;
     on9rstore_def::segment_header selected = {};
-    for (uint32_t copy_slot = 0;
-         copy_slot < on9rstore_def::segment_header_slot_count;
-         copy_slot += 1) {
+    for (uint32_t copy_slot = 0; copy_slot < on9rstore_def::segment_header_slot_count; copy_slot += 1) {
         on9rstore_def::segment_header candidate = {};
-        const uint64_t offset =
-            static_cast<uint64_t>(copy_slot) *
-            on9rstore_def::segment_header_slot_size;
-        esp_err_t ret = read_exact_fd(segment_fd, segment_file_size,
-                                      offset, &candidate,
-                                      sizeof(candidate));
+        const uint64_t offset = static_cast<uint64_t>(copy_slot) * on9rstore_def::segment_header_slot_size;
+        esp_err_t ret = read_exact_fd(segment_fd, segment_file_size, offset, &candidate, sizeof(candidate));
         if (ret != ESP_OK) {
             return ret;
         }
 
-        if (is_segment_header_valid(candidate, slot) &&
-            (!found || candidate.generation > selected.generation)) {
+        if (is_segment_header_valid(candidate, slot) && (!found || candidate.generation > selected.generation)) {
             selected = candidate;
             found = true;
         }
@@ -303,37 +248,25 @@ esp_err_t on9rstore::load_segment_header(
     return ESP_OK;
 }
 
-bool on9rstore::is_segment_footer_valid(
-    const on9rstore_def::segment_footer &candidate,
-    const on9rstore_def::segment_header &header) const
+bool on9rstore::is_segment_footer_valid(const on9rstore_def::segment_footer &candidate,
+                                        const on9rstore_def::segment_header &header) const
 {
-    if (candidate.magic != on9rstore_def::segment_footer_magic ||
-        candidate.revision != on9rstore_def::segment_footer_revision ||
-        candidate.size != sizeof(candidate) ||
-        candidate.store_id != store_id ||
-        candidate.state != on9rstore_def::segment_footer_state_sealed ||
-        candidate.slot != header.slot ||
-        candidate.generation != header.generation ||
-        candidate.data_end < header.data_start ||
-        candidate.data_end > header.data_end ||
-        candidate.index_count > header.index_capacity ||
+    if (candidate.magic != on9rstore_def::segment_footer_magic || candidate.revision != on9rstore_def::segment_footer_revision ||
+        candidate.size != sizeof(candidate) || candidate.store_id != store_id ||
+        candidate.state != on9rstore_def::segment_footer_state_sealed || candidate.slot != header.slot ||
+        candidate.generation != header.generation || candidate.data_end < header.data_start ||
+        candidate.data_end > header.data_end || candidate.index_count > header.index_capacity ||
         candidate.index_stride != header.index_stride) {
         return false;
     }
 
-    if ((candidate.entry_count == 0 &&
-         (candidate.first_entry_id != 0 ||
-          candidate.last_entry_id != 0 ||
-          candidate.index_count != 0 ||
-          candidate.data_end != header.data_start)) ||
-        (candidate.entry_count != 0 &&
-         (candidate.first_entry_id == 0 ||
-          candidate.last_entry_id < candidate.first_entry_id))) {
+    if ((candidate.entry_count == 0 && (candidate.first_entry_id != 0 || candidate.last_entry_id != 0 ||
+                                        candidate.index_count != 0 || candidate.data_end != header.data_start)) ||
+        (candidate.entry_count != 0 && (candidate.first_entry_id == 0 || candidate.last_entry_id < candidate.first_entry_id))) {
         return false;
     }
     if (candidate.entry_count != 0) {
-        const uint64_t expected_index_count =
-            (candidate.entry_count - 1) / candidate.index_stride + 1;
+        const uint64_t expected_index_count = (candidate.entry_count - 1) / candidate.index_stride + 1;
         if (candidate.index_count != expected_index_count) {
             return false;
         }
@@ -342,32 +275,24 @@ bool on9rstore::is_segment_footer_valid(
     on9rstore_def::segment_footer copy = candidate;
     const uint32_t expected_crc = copy.checksum;
     copy.checksum = 0;
-    return calc_crc32(reinterpret_cast<const uint8_t *>(&copy),
-                      sizeof(copy)) == expected_crc;
+    return calc_crc32(reinterpret_cast<const uint8_t *>(&copy), sizeof(copy)) == expected_crc;
 }
 
-esp_err_t on9rstore::load_segment_footer(
-    int segment_fd, const on9rstore_def::segment_header &header,
-    on9rstore_def::segment_footer *footer_out) const
+esp_err_t on9rstore::load_segment_footer(int segment_fd, const on9rstore_def::segment_header &header,
+                                         on9rstore_def::segment_footer *footer_out) const
 {
     if (footer_out == nullptr) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    const uint64_t footer_start =
-        segment_file_size - on9rstore_def::segment_footer_region_size;
+    const uint64_t footer_start = segment_file_size - on9rstore_def::segment_footer_region_size;
     bool found = false;
     on9rstore_def::segment_footer selected = {};
 
-    for (uint32_t slot = 0;
-         slot < on9rstore_def::segment_footer_slot_count; slot += 1) {
+    for (uint32_t slot = 0; slot < on9rstore_def::segment_footer_slot_count; slot += 1) {
         on9rstore_def::segment_footer candidate = {};
-        const uint64_t offset =
-            footer_start + static_cast<uint64_t>(slot) *
-                               on9rstore_def::segment_footer_slot_size;
-        esp_err_t ret = read_exact_fd(segment_fd, segment_file_size,
-                                      offset, &candidate,
-                                      sizeof(candidate));
+        const uint64_t offset = footer_start + static_cast<uint64_t>(slot) * on9rstore_def::segment_footer_slot_size;
+        esp_err_t ret = read_exact_fd(segment_fd, segment_file_size, offset, &candidate, sizeof(candidate));
         if (ret != ESP_OK) {
             return ret;
         }
@@ -386,26 +311,20 @@ esp_err_t on9rstore::load_segment_footer(
     return ESP_OK;
 }
 
-esp_err_t on9rstore::validate_segment_index(
-    int segment_fd, const on9rstore_def::segment_header &header,
-    const on9rstore_def::segment_footer &footer) const
+esp_err_t on9rstore::validate_segment_index(int segment_fd, const on9rstore_def::segment_header &header,
+                                            const on9rstore_def::segment_footer &footer) const
 {
     if (footer.index_count == 0) {
-        return footer.index_checksum == 0 ?
-            ESP_OK : ESP_ERR_INVALID_CRC;
+        return footer.index_checksum == 0 ? ESP_OK : ESP_ERR_INVALID_CRC;
     }
 
     uint8_t chunk[256] = {};
     uint64_t offset = header.index_start;
-    size_t remaining =
-        static_cast<size_t>(footer.index_count) *
-        sizeof(on9rstore_def::sparse_index_entry);
+    size_t remaining = static_cast<size_t>(footer.index_count) * sizeof(on9rstore_def::sparse_index_entry);
     uint32_t crc = UINT32_MAX;
     while (remaining > 0) {
-        const size_t chunk_len =
-            remaining < sizeof(chunk) ? remaining : sizeof(chunk);
-        esp_err_t ret = read_exact_fd(
-            segment_fd, segment_file_size, offset, chunk, chunk_len);
+        const size_t chunk_len = remaining < sizeof(chunk) ? remaining : sizeof(chunk);
+        esp_err_t ret = read_exact_fd(segment_fd, segment_file_size, offset, chunk, chunk_len);
         if (ret != ESP_OK) {
             return ret;
         }
@@ -415,32 +334,24 @@ esp_err_t on9rstore::validate_segment_index(
         remaining -= chunk_len;
     }
 
-    return ~crc == footer.index_checksum ?
-        ESP_OK : ESP_ERR_INVALID_CRC;
+    return ~crc == footer.index_checksum ? ESP_OK : ESP_ERR_INVALID_CRC;
 }
 
-esp_err_t on9rstore::scan_one_entry(
-    int segment_fd, const on9rstore_def::segment_header &segment,
-    uint64_t offset, on9rstore_def::entry_header *header_out,
-    uint64_t *entry_size_out) const
+esp_err_t on9rstore::scan_one_entry(int segment_fd, const on9rstore_def::segment_header &segment, uint64_t offset,
+                                    on9rstore_def::entry_header *header_out, uint64_t *entry_size_out) const
 {
-    if (header_out == nullptr || entry_size_out == nullptr ||
-        offset > segment.data_end - on9rstore_def::min_entry_size) {
+    if (header_out == nullptr || entry_size_out == nullptr || offset > segment.data_end - on9rstore_def::min_entry_size) {
         return ESP_ERR_NOT_FOUND;
     }
 
     on9rstore_def::entry_header header = {};
-    esp_err_t ret = read_exact_fd(segment_fd, segment_file_size, offset,
-                                  &header, sizeof(header));
+    esp_err_t ret = read_exact_fd(segment_fd, segment_file_size, offset, &header, sizeof(header));
     if (ret != ESP_OK) {
         return ret;
     }
 
-    if (header.magic != on9rstore_def::entry_magic ||
-        header.revision != on9rstore_def::entry_revision ||
-        header.store_id != store_id ||
-        header.segment_slot != segment.slot ||
-        header.segment_generation != segment.generation ||
+    if (header.magic != on9rstore_def::entry_magic || header.revision != on9rstore_def::entry_revision ||
+        header.store_id != store_id || header.segment_slot != segment.slot || header.segment_generation != segment.generation ||
         !is_entry_id_valid(header.entry_id)) {
         return ESP_ERR_NOT_FOUND;
     }
@@ -450,17 +361,13 @@ esp_err_t on9rstore::scan_one_entry(
         return ESP_ERR_INVALID_SIZE;
     }
 
-    uint32_t crc = calc_crc32_update(
-        UINT32_MAX, reinterpret_cast<const uint8_t *>(&header),
-        sizeof(header));
+    uint32_t crc = calc_crc32_update(UINT32_MAX, reinterpret_cast<const uint8_t *>(&header), sizeof(header));
     uint8_t chunk[256] = {};
     uint64_t payload_offset = offset + sizeof(header);
     uint32_t remaining = header.len;
     while (remaining > 0) {
-        const size_t chunk_len =
-            remaining < sizeof(chunk) ? remaining : sizeof(chunk);
-        ret = read_exact_fd(segment_fd, segment_file_size, payload_offset,
-                            chunk, chunk_len);
+        const size_t chunk_len = remaining < sizeof(chunk) ? remaining : sizeof(chunk);
+        ret = read_exact_fd(segment_fd, segment_file_size, payload_offset, chunk, chunk_len);
         if (ret != ESP_OK) {
             return ret;
         }
@@ -471,8 +378,7 @@ esp_err_t on9rstore::scan_one_entry(
     }
 
     uint32_t expected_crc = 0;
-    ret = read_exact_fd(segment_fd, segment_file_size, payload_offset,
-                        &expected_crc, sizeof(expected_crc));
+    ret = read_exact_fd(segment_fd, segment_file_size, payload_offset, &expected_crc, sizeof(expected_crc));
     if (ret != ESP_OK) {
         return ret;
     }
@@ -485,10 +391,9 @@ esp_err_t on9rstore::scan_one_entry(
     return ESP_OK;
 }
 
-esp_err_t on9rstore::scan_segment_entries(
-    int segment_fd, const on9rstore_def::segment_header &header,
-    segment_descriptor *descriptor_out, bool build_index,
-    const on9rstore_def::segment_footer *sealed_prefix)
+esp_err_t on9rstore::scan_segment_entries(int segment_fd, const on9rstore_def::segment_header &header,
+                                          segment_descriptor *descriptor_out, bool build_index,
+                                          const on9rstore_def::segment_footer *sealed_prefix)
 {
     if (descriptor_out == nullptr) {
         return ESP_ERR_INVALID_ARG;
@@ -505,15 +410,12 @@ esp_err_t on9rstore::scan_segment_entries(
 
     uint64_t offset = header.data_start;
     uint64_t previous_id = 0;
-    bool prefix_valid =
-        sealed_prefix == nullptr || sealed_prefix->entry_count == 0;
+    bool prefix_valid = sealed_prefix == nullptr || sealed_prefix->entry_count == 0;
     while (offset <= header.data_end - on9rstore_def::min_entry_size) {
         on9rstore_def::entry_header entry = {};
         uint64_t entry_size = 0;
-        esp_err_t ret = scan_one_entry(segment_fd, header, offset,
-                                       &entry, &entry_size);
-        if (ret == ESP_ERR_NOT_FOUND || ret == ESP_ERR_INVALID_SIZE ||
-            ret == ESP_ERR_INVALID_CRC) {
+        esp_err_t ret = scan_one_entry(segment_fd, header, offset, &entry, &entry_size);
+        if (ret == ESP_ERR_NOT_FOUND || ret == ESP_ERR_INVALID_SIZE || ret == ESP_ERR_INVALID_CRC) {
             break;
         }
         if (ret != ESP_OK) {
@@ -526,8 +428,7 @@ esp_err_t on9rstore::scan_segment_entries(
         if (descriptor.entry_count == 0) {
             descriptor.first_entry_id = entry.entry_id;
         }
-        if (build_index &&
-            descriptor.entry_count % header.index_stride == 0) {
+        if (build_index && descriptor.entry_count % header.index_stride == 0) {
             add_sparse_index_entry_unsafe(entry, offset);
         }
 
@@ -538,13 +439,9 @@ esp_err_t on9rstore::scan_segment_entries(
         previous_id = entry.entry_id;
         offset += entry_size;
 
-        if (sealed_prefix != nullptr &&
-            descriptor.entry_count == sealed_prefix->entry_count) {
-            if (descriptor.first_entry_id !=
-                    sealed_prefix->first_entry_id ||
-                descriptor.last_entry_id !=
-                    sealed_prefix->last_entry_id ||
-                descriptor.data_end != sealed_prefix->data_end) {
+        if (sealed_prefix != nullptr && descriptor.entry_count == sealed_prefix->entry_count) {
+            if (descriptor.first_entry_id != sealed_prefix->first_entry_id ||
+                descriptor.last_entry_id != sealed_prefix->last_entry_id || descriptor.data_end != sealed_prefix->data_end) {
                 return ESP_ERR_INVALID_CRC;
             }
             prefix_valid = true;
@@ -559,8 +456,7 @@ esp_err_t on9rstore::scan_segment_entries(
     return ESP_OK;
 }
 
-void on9rstore::set_sealed_segment_descriptor(
-    uint32_t slot, const on9rstore_def::segment_footer &footer)
+void on9rstore::set_sealed_segment_descriptor(uint32_t slot, const on9rstore_def::segment_footer &footer)
 {
     segment_descriptor descriptor = {};
     descriptor.valid = true;
@@ -575,17 +471,13 @@ void on9rstore::set_sealed_segment_descriptor(
     segments[slot] = descriptor;
 }
 
-esp_err_t on9rstore::repair_sealed_segment(
-    int segment_fd, uint32_t slot,
-    const on9rstore_def::segment_header &header,
-    const on9rstore_def::segment_footer &footer)
+esp_err_t on9rstore::repair_sealed_segment(int segment_fd, uint32_t slot, const on9rstore_def::segment_header &header,
+                                           const on9rstore_def::segment_footer &footer)
 {
     segment_descriptor descriptor = {};
-    esp_err_t ret = scan_segment_entries(
-        segment_fd, header, &descriptor, true, &footer);
+    esp_err_t ret = scan_segment_entries(segment_fd, header, &descriptor, true, &footer);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Recover: sealed data is corrupt in slot %" PRIu32,
-                 slot);
+        ESP_LOGE(TAG, "Recover: sealed data is corrupt in slot %" PRIu32, slot);
         return ret;
     }
 
@@ -601,21 +493,17 @@ esp_err_t on9rstore::repair_sealed_segment(
     ret = seal_active_segment_unsafe();
     close_writer_segment();
     if (ret == ESP_OK) {
-        ESP_LOGW(TAG, "Recover: repaired sealed index in slot %" PRIu32,
-                 slot);
+        ESP_LOGW(TAG, "Recover: repaired sealed index in slot %" PRIu32, slot);
     }
     return ret;
 }
 
-esp_err_t on9rstore::recover_segment_contents(
-    int segment_fd, uint32_t slot,
-    const on9rstore_def::segment_header &header)
+esp_err_t on9rstore::recover_segment_contents(int segment_fd, uint32_t slot, const on9rstore_def::segment_header &header)
 {
     on9rstore_def::segment_footer footer = {};
     esp_err_t ret = load_segment_footer(segment_fd, header, &footer);
     if (ret == ESP_ERR_NOT_FOUND) {
-        return scan_segment_entries(
-            segment_fd, header, &segments[slot], false);
+        return scan_segment_entries(segment_fd, header, &segments[slot], false);
     }
     if (ret != ESP_OK) {
         return ret;
@@ -623,8 +511,7 @@ esp_err_t on9rstore::recover_segment_contents(
 
     ret = validate_segment_index(segment_fd, header, footer);
     if (ret == ESP_ERR_INVALID_CRC) {
-        return repair_sealed_segment(
-            segment_fd, slot, header, footer);
+        return repair_sealed_segment(segment_fd, slot, header, footer);
     }
     if (ret != ESP_OK) {
         return ret;
@@ -653,8 +540,7 @@ esp_err_t on9rstore::recover_one_segment(uint32_t slot)
         close_reader_segment();
         return ESP_OK;
     }
-    if (state.oldest_segment_generation != 0 &&
-        header.generation < state.oldest_segment_generation) {
+    if (state.oldest_segment_generation != 0 && header.generation < state.oldest_segment_generation) {
         segments[slot] = {};
         close_reader_segment();
         return ESP_OK;
@@ -669,8 +555,7 @@ esp_err_t on9rstore::recover_one_segment(uint32_t slot)
 esp_err_t on9rstore::open_active_segment(uint32_t slot)
 {
     close_writer_segment();
-    esp_err_t ret =
-        build_data_path(slot, active_data_path, sizeof(active_data_path));
+    esp_err_t ret = build_data_path(slot, active_data_path, sizeof(active_data_path));
     if (ret != ESP_OK) {
         return ret;
     }
@@ -678,8 +563,7 @@ esp_err_t on9rstore::open_active_segment(uint32_t slot)
     return open_file(active_data_path, &writer_fd);
 }
 
-esp_err_t on9rstore::recover_open_segment(
-    uint32_t slot, const on9rstore_def::segment_header &header)
+esp_err_t on9rstore::recover_open_segment(uint32_t slot, const on9rstore_def::segment_header &header)
 {
     esp_err_t ret = open_reader_segment(slot);
     if (ret != ESP_OK) {
@@ -711,12 +595,8 @@ esp_err_t on9rstore::write_active_sparse_index_unsafe()
         return sync_fd(writer_fd);
     }
 
-    const size_t bytes =
-        static_cast<size_t>(sparse_index_count) *
-        sizeof(on9rstore_def::sparse_index_entry);
-    esp_err_t ret = write_exact_fd(writer_fd, segment_file_size,
-                                   active_segment.index_start,
-                                   sparse_index.get(), bytes);
+    const size_t bytes = static_cast<size_t>(sparse_index_count) * sizeof(on9rstore_def::sparse_index_entry);
+    esp_err_t ret = write_exact_fd(writer_fd, segment_file_size, active_segment.index_start, sparse_index.get(), bytes);
     if (ret == ESP_OK) {
         ret = sync_fd(writer_fd);
     }
@@ -736,8 +616,7 @@ esp_err_t on9rstore::seal_active_segment_unsafe()
         return ret;
     }
 
-    const segment_descriptor &descriptor =
-        segments[active_segment.slot];
+    const segment_descriptor &descriptor = segments[active_segment.slot];
     on9rstore_def::segment_footer footer = {};
     footer.magic = on9rstore_def::segment_footer_magic;
     footer.revision = on9rstore_def::segment_footer_revision;
@@ -753,19 +632,14 @@ esp_err_t on9rstore::seal_active_segment_unsafe()
     footer.index_count = sparse_index_count;
     footer.index_stride = active_segment.index_stride;
     if (sparse_index_count > 0) {
-        const size_t index_size =
-            static_cast<size_t>(sparse_index_count) *
-            sizeof(on9rstore_def::sparse_index_entry);
-        footer.index_checksum = calc_crc32(
-            reinterpret_cast<const uint8_t *>(sparse_index.get()),
-            index_size);
+        const size_t index_size = static_cast<size_t>(sparse_index_count) * sizeof(on9rstore_def::sparse_index_entry);
+        footer.index_checksum = calc_crc32(reinterpret_cast<const uint8_t *>(sparse_index.get()), index_size);
     }
 
     ret = write_segment_footers(writer_fd, footer);
     if (ret == ESP_OK) {
         segments[active_segment.slot].sealed = true;
-        segments[active_segment.slot].index_count =
-            sparse_index_count;
+        segments[active_segment.slot].index_count = sparse_index_count;
     }
 
     return ret;
@@ -781,8 +655,7 @@ esp_err_t on9rstore::seal_recovered_segment(uint32_t slot)
     on9rstore_def::segment_header header = {};
     ret = load_segment_header(reader_fd, slot, &header);
     if (ret == ESP_OK) {
-        ret = scan_segment_entries(reader_fd, header, &segments[slot],
-                                   true);
+        ret = scan_segment_entries(reader_fd, header, &segments[slot], true);
     }
     close_reader_segment();
     if (ret != ESP_OK) {
@@ -828,9 +701,7 @@ void on9rstore::update_recovered_manifest_state()
             continue;
         }
 
-        used_size +=
-            descriptor.data_end -
-            on9rstore_def::segment_header_region_size;
+        used_size += descriptor.data_end - on9rstore_def::segment_header_region_size;
         if (descriptor.last_entry_id > newest_id) {
             newest_id = descriptor.last_entry_id;
         }
@@ -843,15 +714,12 @@ void on9rstore::update_recovered_manifest_state()
     state.newest_entry_id = newest_id;
     newest_entry_id = newest_id;
     if (newest_id != 0) {
-        const uint32_t entry_boot =
-            static_cast<uint32_t>(newest_id >> 40ULL);
+        const uint32_t entry_boot = static_cast<uint32_t>(newest_id >> 40ULL);
         if (entry_boot > state.boot_counter) {
             state.boot_counter = entry_boot;
-            state.next_entry_sequence =
-                newest_id & on9rstore_def::entry_id_sequence_mask;
+            state.next_entry_sequence = newest_id & on9rstore_def::entry_id_sequence_mask;
         } else if (entry_boot == state.boot_counter) {
-            const uint64_t entry_sequence =
-                newest_id & on9rstore_def::entry_id_sequence_mask;
+            const uint64_t entry_sequence = newest_id & on9rstore_def::entry_id_sequence_mask;
             if (entry_sequence > state.next_entry_sequence) {
                 state.next_entry_sequence = entry_sequence;
             }
@@ -877,8 +745,7 @@ esp_err_t on9rstore::recover_all_segments()
             return ret;
         }
 
-        if (segments[slot].valid &&
-            segments[slot].generation > highest_generation) {
+        if (segments[slot].valid && segments[slot].generation > highest_generation) {
             highest_generation = segments[slot].generation;
             highest_slot = slot;
         }
@@ -895,8 +762,7 @@ esp_err_t on9rstore::recover_all_segments()
     }
 
     for (uint32_t slot = 0; slot < segment_count; slot += 1) {
-        if (segments[slot].valid && !segments[slot].sealed &&
-            slot != highest_slot) {
+        if (segments[slot].valid && !segments[slot].sealed && slot != highest_slot) {
             esp_err_t ret = seal_recovered_segment(slot);
             if (ret != ESP_OK) {
                 return ret;
@@ -918,8 +784,7 @@ esp_err_t on9rstore::select_or_create_active_segment()
     uint64_t highest_generation = 0;
     uint32_t highest_slot = 0;
     for (uint32_t slot = 0; slot < segment_count; slot += 1) {
-        if (segments[slot].valid &&
-            segments[slot].generation > highest_generation) {
+        if (segments[slot].valid && segments[slot].generation > highest_generation) {
             highest_generation = segments[slot].generation;
             highest_slot = slot;
         }
@@ -954,18 +819,14 @@ esp_err_t on9rstore::retire_segment_unsafe(uint32_t slot)
         return ESP_OK;
     }
 
-    const uint64_t data_size =
-        segments[slot].data_end -
-        on9rstore_def::segment_header_region_size;
-    state.used_size =
-        state.used_size > data_size ? state.used_size - data_size : 0;
+    const uint64_t data_size = segments[slot].data_end - on9rstore_def::segment_header_region_size;
+    state.used_size = state.used_size > data_size ? state.used_size - data_size : 0;
     segments[slot] = {};
     update_oldest_segment_generation();
     return commit_manifest_superblock_unsafe();
 }
 
-esp_err_t on9rstore::activate_segment_unsafe(uint32_t slot,
-                                            uint64_t generation)
+esp_err_t on9rstore::activate_segment_unsafe(uint32_t slot, uint64_t generation)
 {
     esp_err_t ret = open_active_segment(slot);
     if (ret != ESP_OK) {
@@ -1006,10 +867,8 @@ esp_err_t on9rstore::activate_segment_unsafe(uint32_t slot,
 
 esp_err_t on9rstore::open_next_segment_unsafe()
 {
-    const uint32_t next_slot =
-        (state.active_slot + 1) % segment_count;
-    const uint64_t next_generation =
-        state.next_segment_generation;
+    const uint32_t next_slot = (state.active_slot + 1) % segment_count;
+    const uint64_t next_generation = state.next_segment_generation;
     if (next_generation == 0 || next_generation == UINT64_MAX) {
         return ESP_ERR_INVALID_STATE;
     }

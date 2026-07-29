@@ -25,19 +25,13 @@ public:
 public:
     esp_err_t init();
     esp_err_t append_entry(uint16_t type, const uint8_t *payload, size_t payload_len,
-                           on9rstore_def::entry_header *entry_info_out = nullptr,
-                           uint32_t timeout_ticks = portMAX_DELAY, bool force_flush = false);
-    esp_err_t append_time_anchor(const on9rstore_def::time_anchor &anchor,
-                                 uint32_t timeout_ticks = portMAX_DELAY);
-    esp_err_t read_entry(
-        uint64_t entry_id, uint8_t *payload_out, size_t payload_out_len,
-        on9rstore_def::entry_header *entry_info_out = nullptr,
-        uint32_t timeout_ticks = portMAX_DELAY);
-    esp_err_t read_next_entry(
-        on9rstore_def::entry_range_cursor *cursor,
-        uint8_t *payload_out, size_t payload_out_len,
-        on9rstore_def::entry_header *entry_info_out = nullptr,
-        uint32_t timeout_ticks = portMAX_DELAY);
+                           on9rstore_def::entry_header *entry_info_out = nullptr, uint32_t timeout_ticks = portMAX_DELAY,
+                           bool force_flush = false);
+    esp_err_t append_time_anchor(const on9rstore_def::time_anchor &anchor, uint32_t timeout_ticks = portMAX_DELAY);
+    esp_err_t read_entry(uint64_t entry_id, uint8_t *payload_out, size_t payload_out_len,
+                         on9rstore_def::entry_header *entry_info_out = nullptr, uint32_t timeout_ticks = portMAX_DELAY);
+    esp_err_t read_next_entry(on9rstore_def::entry_range_cursor *cursor, uint8_t *payload_out, size_t payload_out_len,
+                              on9rstore_def::entry_header *entry_info_out = nullptr, uint32_t timeout_ticks = portMAX_DELAY);
     esp_err_t flush_write(uint32_t timeout_ticks = portMAX_DELAY);
     esp_err_t deinit(bool force = false);
 
@@ -77,10 +71,8 @@ private: // Manifest operations
     esp_err_t write_initial_manifest_copies();
     esp_err_t recover_time_anchor_ring();
     esp_err_t append_time_anchor_unsafe(const on9rstore_def::time_anchor &anchor);
-    esp_err_t write_time_anchor_slot(const on9rstore_def::time_anchor_entry &entry,
-                                     uint32_t slot);
-    esp_err_t read_time_anchor_slot(on9rstore_def::time_anchor_entry *entry_out,
-                                    uint32_t slot) const;
+    esp_err_t write_time_anchor_slot(const on9rstore_def::time_anchor_entry &entry, uint32_t slot);
+    esp_err_t read_time_anchor_slot(on9rstore_def::time_anchor_entry *entry_out, uint32_t slot) const;
     bool is_manifest_superblock_valid(const on9rstore_def::manifest_superblock &candidate) const;
     bool is_time_anchor_valid(const on9rstore_def::time_anchor_entry &candidate) const;
     bool is_time_anchor_input_valid(const on9rstore_def::time_anchor &anchor) const;
@@ -91,21 +83,15 @@ private: // Manifest operations
 private: // Segment operations
     esp_err_t provision_all_segments();
     esp_err_t provision_one_segment(uint32_t slot, bool *active_found);
-    esp_err_t resume_provisioning_segment(int segment_fd, uint32_t slot,
-                                          bool *active_found);
+    esp_err_t resume_provisioning_segment(int segment_fd, uint32_t slot, bool *active_found);
     esp_err_t finish_segment_provisioning(bool active_found);
     esp_err_t initialise_empty_segment(int segment_fd, uint32_t slot);
     esp_err_t recover_all_segments();
     esp_err_t recover_one_segment(uint32_t slot);
-    esp_err_t recover_segment_contents(
-        int segment_fd, uint32_t slot,
-        const on9rstore_def::segment_header &header);
-    esp_err_t repair_sealed_segment(
-        int segment_fd, uint32_t slot,
-        const on9rstore_def::segment_header &header,
-        const on9rstore_def::segment_footer &footer);
-    esp_err_t recover_open_segment(uint32_t slot,
-                                   const on9rstore_def::segment_header &header);
+    esp_err_t recover_segment_contents(int segment_fd, uint32_t slot, const on9rstore_def::segment_header &header);
+    esp_err_t repair_sealed_segment(int segment_fd, uint32_t slot, const on9rstore_def::segment_header &header,
+                                    const on9rstore_def::segment_footer &footer);
+    esp_err_t recover_open_segment(uint32_t slot, const on9rstore_def::segment_header &header);
     esp_err_t seal_recovered_segment(uint32_t slot);
     esp_err_t select_or_create_active_segment();
     esp_err_t open_active_segment(uint32_t slot);
@@ -114,76 +100,48 @@ private: // Segment operations
     esp_err_t activate_segment_unsafe(uint32_t slot, uint64_t generation);
     esp_err_t seal_active_segment_unsafe();
     esp_err_t write_active_sparse_index_unsafe();
-    esp_err_t write_segment_headers(int segment_fd,
-                                    const on9rstore_def::segment_header &header);
-    esp_err_t write_segment_footers(int segment_fd,
-                                    const on9rstore_def::segment_footer &footer);
-    esp_err_t load_segment_header(int segment_fd, uint32_t slot,
-                                  on9rstore_def::segment_header *header_out) const;
-    esp_err_t load_segment_footer(int segment_fd,
-                                  const on9rstore_def::segment_header &header,
+    esp_err_t write_segment_headers(int segment_fd, const on9rstore_def::segment_header &header);
+    esp_err_t write_segment_footers(int segment_fd, const on9rstore_def::segment_footer &footer);
+    esp_err_t load_segment_header(int segment_fd, uint32_t slot, on9rstore_def::segment_header *header_out) const;
+    esp_err_t load_segment_footer(int segment_fd, const on9rstore_def::segment_header &header,
                                   on9rstore_def::segment_footer *footer_out) const;
-    esp_err_t validate_segment_index(
-        int segment_fd, const on9rstore_def::segment_header &header,
-        const on9rstore_def::segment_footer &footer) const;
-    esp_err_t scan_segment_entries(int segment_fd,
-                                   const on9rstore_def::segment_header &header,
-                                   segment_descriptor *descriptor_out,
-                                   bool build_index,
-                                   const on9rstore_def::segment_footer
-                                       *sealed_prefix = nullptr);
-    esp_err_t scan_one_entry(int segment_fd,
-                             const on9rstore_def::segment_header &segment,
-                             uint64_t offset,
-                             on9rstore_def::entry_header *header_out,
-                             uint64_t *entry_size_out) const;
-    bool is_segment_header_valid(const on9rstore_def::segment_header &candidate,
-                                 uint32_t slot) const;
+    esp_err_t validate_segment_index(int segment_fd, const on9rstore_def::segment_header &header,
+                                     const on9rstore_def::segment_footer &footer) const;
+    esp_err_t scan_segment_entries(int segment_fd, const on9rstore_def::segment_header &header,
+                                   segment_descriptor *descriptor_out, bool build_index,
+                                   const on9rstore_def::segment_footer *sealed_prefix = nullptr);
+    esp_err_t scan_one_entry(int segment_fd, const on9rstore_def::segment_header &segment, uint64_t offset,
+                             on9rstore_def::entry_header *header_out, uint64_t *entry_size_out) const;
+    bool is_segment_header_valid(const on9rstore_def::segment_header &candidate, uint32_t slot) const;
     bool is_segment_footer_valid(const on9rstore_def::segment_footer &candidate,
                                  const on9rstore_def::segment_header &header) const;
-    bool calculate_segment_geometry(uint64_t segment_size,
-                                    on9rstore_def::segment_header *geometry_out) const;
-    void set_sealed_segment_descriptor(
-        uint32_t slot, const on9rstore_def::segment_footer &footer);
+    bool calculate_segment_geometry(uint64_t segment_size, on9rstore_def::segment_header *geometry_out) const;
+    void set_sealed_segment_descriptor(uint32_t slot, const on9rstore_def::segment_footer &footer);
     void update_recovered_manifest_state();
     void update_oldest_segment_generation();
 
 private: // Entry operations; write_lock must be held
     esp_err_t append_boot_entry_unsafe();
-    esp_err_t append_coredump_entry_unsafe(
-        const void *partition, size_t partition_offset, size_t coredump_size,
-        uint32_t coredump_crc, const on9rstore_def::boot_event &event);
-    esp_err_t calculate_coredump_crc_unsafe(
-        const void *partition, size_t partition_offset, size_t coredump_size,
-        uint32_t *crc_out) const;
-    esp_err_t stream_coredump_payload_unsafe(
-        const void *partition, size_t partition_offset, size_t coredump_size,
-        uint64_t destination_offset, uint32_t *entry_crc) const;
-    esp_err_t append_entry_unsafe(uint16_t type, const uint8_t *payload,
-                                  uint32_t payload_len,
-                                  on9rstore_def::entry_header *entry_info_out,
-                                  bool force_flush);
-    esp_err_t append_buffered_entry_unsafe(uint16_t type, const uint8_t *payload,
-                                           uint32_t payload_len,
-                                           on9rstore_def::entry_header *entry_info_out,
-                                           bool force_flush);
-    esp_err_t append_direct_entry_unsafe(uint16_t type, const uint8_t *payload,
-                                         uint32_t payload_len,
+    esp_err_t append_coredump_entry_unsafe(const void *partition, size_t partition_offset, size_t coredump_size,
+                                           uint32_t coredump_crc, const on9rstore_def::boot_event &event);
+    esp_err_t calculate_coredump_crc_unsafe(const void *partition, size_t partition_offset, size_t coredump_size,
+                                            uint32_t *crc_out) const;
+    esp_err_t stream_coredump_payload_unsafe(const void *partition, size_t partition_offset, size_t coredump_size,
+                                             uint64_t destination_offset, uint32_t *entry_crc) const;
+    esp_err_t append_entry_unsafe(uint16_t type, const uint8_t *payload, uint32_t payload_len,
+                                  on9rstore_def::entry_header *entry_info_out, bool force_flush);
+    esp_err_t append_buffered_entry_unsafe(uint16_t type, const uint8_t *payload, uint32_t payload_len,
+                                           on9rstore_def::entry_header *entry_info_out, bool force_flush);
+    esp_err_t append_direct_entry_unsafe(uint16_t type, const uint8_t *payload, uint32_t payload_len,
                                          on9rstore_def::entry_header *entry_info_out);
     esp_err_t prepare_entry_space_unsafe(uint64_t entry_size);
     esp_err_t rotate_active_segment_unsafe();
     esp_err_t flush_unsafe();
-    esp_err_t write_entry_trailer_unsafe(uint64_t entry_offset,
-                                         uint32_t payload_len, uint32_t crc,
-                                         uint64_t entry_size);
-    esp_err_t write_zeroes_unsafe(int file_fd, uint64_t file_size,
-                                  uint64_t offset, uint64_t len) const;
-    esp_err_t build_entry_header_unsafe(uint16_t type, uint32_t payload_len,
-                                        on9rstore_def::entry_header *header_out);
-    void account_appended_entry_unsafe(const on9rstore_def::entry_header &header,
-                                       uint64_t offset, uint64_t entry_size);
-    void add_sparse_index_entry_unsafe(const on9rstore_def::entry_header &header,
-                                       uint64_t offset);
+    esp_err_t write_entry_trailer_unsafe(uint64_t entry_offset, uint32_t payload_len, uint32_t crc, uint64_t entry_size);
+    esp_err_t write_zeroes_unsafe(int file_fd, uint64_t file_size, uint64_t offset, uint64_t len) const;
+    esp_err_t build_entry_header_unsafe(uint16_t type, uint32_t payload_len, on9rstore_def::entry_header *header_out);
+    void account_appended_entry_unsafe(const on9rstore_def::entry_header &header, uint64_t offset, uint64_t entry_size);
+    void add_sparse_index_entry_unsafe(const on9rstore_def::entry_header &header, uint64_t offset);
     uint64_t make_next_entry_id_unsafe();
     static uint64_t get_entry_size(uint32_t payload_len);
     static bool is_entry_id_valid(uint64_t entry_id);
@@ -192,63 +150,34 @@ private: // Read operations
     esp_err_t acquire_read_operation_locks(uint32_t timeout_ticks) const;
     void snapshot_read_state_unsafe();
     void release_read_operation_lock() const;
-    bool find_read_segment(uint64_t first_entry_id,
-                           uint64_t last_entry_id,
-                           bool exact,
-                           segment_descriptor *descriptor_out) const;
-    esp_err_t prepare_read_segment(
-        const segment_descriptor &descriptor,
-        on9rstore_def::segment_header *header_out);
-    esp_err_t load_read_sparse_index(
-        const segment_descriptor &descriptor,
-        const on9rstore_def::segment_header &header);
-    bool is_read_sparse_index_valid(
-        const segment_descriptor &descriptor,
-        const on9rstore_def::segment_header &header) const;
-    void find_read_start(
-        uint64_t entry_id,
-        const on9rstore_def::segment_header &header,
-        uint64_t *offset_out,
-        on9rstore_def::sparse_index_entry *index_entry_out) const;
-    esp_err_t read_matching_entry(
-        const segment_descriptor &descriptor,
-        const on9rstore_def::segment_header &header,
-        uint64_t first_entry_id, uint64_t last_entry_id, bool exact,
-        uint8_t *payload_out, size_t payload_out_len,
-        on9rstore_def::entry_header *entry_info_out);
-    esp_err_t read_snapshot_bytes(
-        const on9rstore_def::segment_header &segment,
-        uint64_t offset, void *buf_out, size_t len) const;
-    esp_err_t read_snapshot_entry_header(
-        const on9rstore_def::segment_header &segment,
-        uint64_t entry_limit, uint64_t offset,
-        on9rstore_def::entry_header *header_out,
-        uint64_t *entry_size_out) const;
-    esp_err_t validate_snapshot_entry_payload(
-        const on9rstore_def::segment_header &segment,
-        uint64_t offset, const on9rstore_def::entry_header &header,
-        uint8_t *payload_out, size_t payload_out_len,
-        bool copy_payload) const;
-    esp_err_t read_entry_internal(
-        uint64_t first_entry_id, uint64_t last_entry_id, bool exact,
-        uint8_t *payload_out, size_t payload_out_len,
-        on9rstore_def::entry_header *entry_info_out,
-        uint32_t timeout_ticks);
+    bool find_read_segment(uint64_t first_entry_id, uint64_t last_entry_id, bool exact, segment_descriptor *descriptor_out) const;
+    esp_err_t prepare_read_segment(const segment_descriptor &descriptor, on9rstore_def::segment_header *header_out);
+    esp_err_t load_read_sparse_index(const segment_descriptor &descriptor, const on9rstore_def::segment_header &header);
+    bool is_read_sparse_index_valid(const segment_descriptor &descriptor, const on9rstore_def::segment_header &header) const;
+    void find_read_start(uint64_t entry_id, const on9rstore_def::segment_header &header, uint64_t *offset_out,
+                         on9rstore_def::sparse_index_entry *index_entry_out) const;
+    esp_err_t read_matching_entry(const segment_descriptor &descriptor, const on9rstore_def::segment_header &header,
+                                  uint64_t first_entry_id, uint64_t last_entry_id, bool exact, uint8_t *payload_out,
+                                  size_t payload_out_len, on9rstore_def::entry_header *entry_info_out);
+    esp_err_t read_snapshot_bytes(const on9rstore_def::segment_header &segment, uint64_t offset, void *buf_out, size_t len) const;
+    esp_err_t read_snapshot_entry_header(const on9rstore_def::segment_header &segment, uint64_t entry_limit, uint64_t offset,
+                                         on9rstore_def::entry_header *header_out, uint64_t *entry_size_out) const;
+    esp_err_t validate_snapshot_entry_payload(const on9rstore_def::segment_header &segment, uint64_t offset,
+                                              const on9rstore_def::entry_header &header, uint8_t *payload_out,
+                                              size_t payload_out_len, bool copy_payload) const;
+    esp_err_t read_entry_internal(uint64_t first_entry_id, uint64_t last_entry_id, bool exact, uint8_t *payload_out,
+                                  size_t payload_out_len, on9rstore_def::entry_header *entry_info_out, uint32_t timeout_ticks);
 
 private: // File operations
     esp_err_t build_manifest_path();
-    esp_err_t build_data_path(uint32_t slot, char *path_out,
-                              size_t path_out_len) const;
+    esp_err_t build_data_path(uint32_t slot, char *path_out, size_t path_out_len) const;
     esp_err_t verify_new_store_namespace_empty() const;
-    esp_err_t provision_contiguous_file(const char *path, uint64_t size,
-                                        bool *created_out) const;
+    esp_err_t provision_contiguous_file(const char *path, uint64_t size, bool *created_out) const;
     esp_err_t validate_contiguous_file(const char *path, uint64_t size) const;
     esp_err_t open_file(const char *path, int *fd_out) const;
     esp_err_t open_reader_segment(uint32_t slot);
-    esp_err_t read_exact_fd(int file_fd, uint64_t file_size, uint64_t offset,
-                            void *buf_out, size_t len) const;
-    esp_err_t write_exact_fd(int file_fd, uint64_t file_size, uint64_t offset,
-                             const void *buf, size_t len) const;
+    esp_err_t read_exact_fd(int file_fd, uint64_t file_size, uint64_t offset, void *buf_out, size_t len) const;
+    esp_err_t write_exact_fd(int file_fd, uint64_t file_size, uint64_t offset, const void *buf, size_t len) const;
     esp_err_t sync_fd(int file_fd) const;
     void close_reader_segment();
     void close_writer_segment();
