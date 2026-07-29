@@ -135,8 +135,19 @@ esp_err_t on9rstore::allocate_runtime_buffers()
         return ESP_ERR_NO_MEM;
     }
 
+    read_buf.reset(new (std::nothrow) uint8_t[cfg.write_buffer_size]);
+    if (read_buf == nullptr) {
+        return ESP_ERR_NO_MEM;
+    }
+
     segments.reset(new (std::nothrow) segment_descriptor[segment_count]);
     if (segments == nullptr) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    read_segments.reset(
+        new (std::nothrow) segment_descriptor[segment_count]);
+    if (read_segments == nullptr) {
         return ESP_ERR_NO_MEM;
     }
 
@@ -149,6 +160,13 @@ esp_err_t on9rstore::allocate_runtime_buffers()
     sparse_index.reset(new (std::nothrow)
                            on9rstore_def::sparse_index_entry[sparse_index_capacity]);
     if (sparse_index == nullptr) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    read_sparse_index.reset(new (std::nothrow)
+                                on9rstore_def::sparse_index_entry[
+                                    sparse_index_capacity]);
+    if (read_sparse_index == nullptr) {
         return ESP_ERR_NO_MEM;
     }
 
@@ -324,13 +342,19 @@ uint32_t on9rstore::get_time_anchor_count() const
 void on9rstore::reset_runtime_state()
 {
     write_buf.reset();
+    read_buf.reset();
     segments.reset();
+    read_segments.reset();
     sparse_index.reset();
+    read_sparse_index.reset();
     write_buf_pos = 0;
     write_buf_offset = 0;
     active_write_offset = 0;
     sparse_index_count = 0;
     sparse_index_capacity = 0;
+    read_sparse_index_count = 0;
+    read_buf_pos = 0;
+    read_buf_offset = 0;
     manifest_file_size = 0;
     segment_file_size = 0;
     segment_count = 0;
@@ -342,6 +366,7 @@ void on9rstore::reset_runtime_state()
     active_data_path[0] = '\0';
     state = {};
     active_segment = {};
+    read_active_segment = {};
 }
 
 void on9rstore::close_storage_unsafe()
@@ -378,12 +403,20 @@ esp_err_t on9rstore::deinit(bool force)
         return ESP_ERR_TIMEOUT;
     }
 
+    if (xSemaphoreTake(read_lock, portMAX_DELAY) != pdTRUE) {
+        xSemaphoreGive(write_lock);
+        shutting_down = false;
+        xSemaphoreGive(lifecycle_lock);
+        return ESP_ERR_TIMEOUT;
+    }
+
     esp_err_t ret = force ? ESP_OK : flush_unsafe();
     if (ret == ESP_OK || force) {
         initialized = false;
         close_storage_unsafe();
     }
 
+    xSemaphoreGive(read_lock);
     xSemaphoreGive(write_lock);
     shutting_down = false;
     xSemaphoreGive(lifecycle_lock);

@@ -148,6 +148,13 @@ namespace on9rstore_def
 
     static_assert(sizeof(sparse_index_entry) == 24);
 
+    // Runtime-only cursor state; this is not part of revision-4 storage.
+    struct entry_range_cursor {
+        uint64_t next_entry_id = 0;
+        uint64_t last_entry_id = UINT64_MAX;
+        bool finished = false;
+    };
+
     struct ON9RSTORE_PACKED segment_footer {
         uint32_t magic;
         uint16_t revision;

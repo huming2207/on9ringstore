@@ -29,6 +29,15 @@ public:
                            uint32_t timeout_ticks = portMAX_DELAY, bool force_flush = false);
     esp_err_t append_time_anchor(const on9rstore_def::time_anchor &anchor,
                                  uint32_t timeout_ticks = portMAX_DELAY);
+    esp_err_t read_entry(
+        uint64_t entry_id, uint8_t *payload_out, size_t payload_out_len,
+        on9rstore_def::entry_header *entry_info_out = nullptr,
+        uint32_t timeout_ticks = portMAX_DELAY);
+    esp_err_t read_next_entry(
+        on9rstore_def::entry_range_cursor *cursor,
+        uint8_t *payload_out, size_t payload_out_len,
+        on9rstore_def::entry_header *entry_info_out = nullptr,
+        uint32_t timeout_ticks = portMAX_DELAY);
     esp_err_t flush_write(uint32_t timeout_ticks = portMAX_DELAY);
     esp_err_t deinit(bool force = false);
 
@@ -179,6 +188,53 @@ private: // Entry operations; write_lock must be held
     static uint64_t get_entry_size(uint32_t payload_len);
     static bool is_entry_id_valid(uint64_t entry_id);
 
+private: // Read operations
+    esp_err_t acquire_read_operation_locks(uint32_t timeout_ticks) const;
+    void snapshot_read_state_unsafe();
+    void release_read_operation_lock() const;
+    bool find_read_segment(uint64_t first_entry_id,
+                           uint64_t last_entry_id,
+                           bool exact,
+                           segment_descriptor *descriptor_out) const;
+    esp_err_t prepare_read_segment(
+        const segment_descriptor &descriptor,
+        on9rstore_def::segment_header *header_out);
+    esp_err_t load_read_sparse_index(
+        const segment_descriptor &descriptor,
+        const on9rstore_def::segment_header &header);
+    bool is_read_sparse_index_valid(
+        const segment_descriptor &descriptor,
+        const on9rstore_def::segment_header &header) const;
+    void find_read_start(
+        uint64_t entry_id,
+        const on9rstore_def::segment_header &header,
+        uint64_t *offset_out,
+        on9rstore_def::sparse_index_entry *index_entry_out) const;
+    esp_err_t read_matching_entry(
+        const segment_descriptor &descriptor,
+        const on9rstore_def::segment_header &header,
+        uint64_t first_entry_id, uint64_t last_entry_id, bool exact,
+        uint8_t *payload_out, size_t payload_out_len,
+        on9rstore_def::entry_header *entry_info_out);
+    esp_err_t read_snapshot_bytes(
+        const on9rstore_def::segment_header &segment,
+        uint64_t offset, void *buf_out, size_t len) const;
+    esp_err_t read_snapshot_entry_header(
+        const on9rstore_def::segment_header &segment,
+        uint64_t entry_limit, uint64_t offset,
+        on9rstore_def::entry_header *header_out,
+        uint64_t *entry_size_out) const;
+    esp_err_t validate_snapshot_entry_payload(
+        const on9rstore_def::segment_header &segment,
+        uint64_t offset, const on9rstore_def::entry_header &header,
+        uint8_t *payload_out, size_t payload_out_len,
+        bool copy_payload) const;
+    esp_err_t read_entry_internal(
+        uint64_t first_entry_id, uint64_t last_entry_id, bool exact,
+        uint8_t *payload_out, size_t payload_out_len,
+        on9rstore_def::entry_header *entry_info_out,
+        uint32_t timeout_ticks);
+
 private: // File operations
     esp_err_t build_manifest_path();
     esp_err_t build_data_path(uint32_t slot, char *path_out,
@@ -228,6 +284,14 @@ private:
     std::unique_ptr<on9rstore_def::sparse_index_entry[]> sparse_index;
     uint32_t sparse_index_count = 0;
     uint32_t sparse_index_capacity = 0;
+
+    std::unique_ptr<segment_descriptor[]> read_segments;
+    std::unique_ptr<on9rstore_def::sparse_index_entry[]> read_sparse_index;
+    std::unique_ptr<uint8_t[]> read_buf;
+    on9rstore_def::segment_header read_active_segment = {};
+    uint32_t read_sparse_index_count = 0;
+    size_t read_buf_pos = 0;
+    uint64_t read_buf_offset = 0;
 
     std::unique_ptr<uint8_t[]> write_buf;
     size_t write_buf_pos = 0;

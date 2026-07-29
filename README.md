@@ -501,6 +501,60 @@ Small entries are batched until `flush_write()` or `force_flush=true`. Entries
 larger than the configured write buffer stream directly and are synced before
 returning. `flush_write()` syncs entry data before checkpointing the manifest.
 
+## Reading entries
+
+`read_entry()` performs an exact entry-ID lookup:
+
+```c++
+uint8_t payload[256] = {};
+on9rstore_def::entry_header entry = {};
+
+esp_err_t ret = store.read_entry(
+    wanted_entry_id, payload, sizeof(payload), &entry);
+```
+
+The lookup selects the retained segment from its recovered descriptor,
+binary-searches that segment's sparse index, then validates and scans the
+short entry run beginning at the selected index item. The returned entry is
+accepted only after its store identity, physical slot, segment generation,
+bounds, ordering, and entry CRC validate.
+
+The caller owns the payload buffer. A successful call copies the complete
+payload; payloads are never silently truncated. If the buffer is too small,
+the call returns `ESP_ERR_INVALID_SIZE`, fills `entry_info_out` when supplied,
+and leaves `entry_info_out->len` set to the required payload size. Passing
+`nullptr, 0` is therefore a bounded way to query an entry's header and required
+payload size.
+
+`read_next_entry()` provides forward inclusive range iteration:
+
+```c++
+on9rstore_def::entry_range_cursor cursor = {
+    .next_entry_id = first_entry_id,
+    .last_entry_id = last_entry_id,
+};
+
+while (store.read_next_entry(
+           &cursor, payload, sizeof(payload), &entry) == ESP_OK) {
+    // Consume entry and its complete payload.
+}
+```
+
+`next_entry_id == 0` begins at the oldest retained entry. Entry-ID gaps are
+skipped. After a successful read the cursor advances beyond the returned ID.
+It does not advance after `ESP_ERR_INVALID_SIZE` or another error, so the
+caller can retry with a larger buffer. Once no retained entry remains in the
+inclusive range, the API returns `ESP_ERR_NOT_FOUND` and sets
+`cursor.finished`.
+
+Each cursor call takes a fresh retained-state snapshot; a cursor does not pin
+the entire range across calls. Reads include entries still in the active write
+buffer at the instant of that per-call snapshot. The write buffer, active
+sparse index, and segment descriptors are copied under the writer lock, after
+which normal appends may continue. The reader lock prevents segment retirement
+and physical-slot reuse until that individual read finishes, and
+deinitialisation waits for the same lock.
+
 ## Segment layout
 
 Each fixed-size data file contains:

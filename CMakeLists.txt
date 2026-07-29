@@ -16,6 +16,7 @@ idf_component_register(
             "on9rstore_entry.cpp"
             "on9rstore_io.cpp"
             "on9rstore_manifest.cpp"
+            "on9rstore_read.cpp"
             "on9rstore_segment.cpp"
 
         INCLUDE_DIRS

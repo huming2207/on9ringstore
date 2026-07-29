@@ -1014,19 +1014,22 @@ esp_err_t on9rstore::open_next_segment_unsafe()
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (xSemaphoreTake(read_lock, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
     esp_err_t ret = retire_segment_unsafe(next_slot);
-    if (ret != ESP_OK) {
-        return ret;
+    if (ret == ESP_OK) {
+        ret = activate_segment_unsafe(next_slot, next_generation);
+    }
+    if (ret == ESP_OK) {
+        state.active_slot = next_slot;
+        state.active_segment_generation = next_generation;
+        state.next_segment_generation = next_generation + 1;
+        update_oldest_segment_generation();
+        ret = commit_manifest_superblock_unsafe();
     }
 
-    ret = activate_segment_unsafe(next_slot, next_generation);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-
-    state.active_slot = next_slot;
-    state.active_segment_generation = next_generation;
-    state.next_segment_generation = next_generation + 1;
-    update_oldest_segment_generation();
-    return commit_manifest_superblock_unsafe();
+    xSemaphoreGive(read_lock);
+    return ret;
 }
