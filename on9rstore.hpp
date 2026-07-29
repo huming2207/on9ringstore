@@ -35,6 +35,10 @@ public:
     esp_err_t read_next_entry_by_uptime(on9rstore_def::boot_uptime_range_cursor *cursor, uint8_t *payload_out,
                                         size_t payload_out_len, on9rstore_def::entry_header *entry_info_out = nullptr,
                                         uint32_t timeout_ticks = portMAX_DELAY);
+    esp_err_t read_next_entry_by_utc(on9rstore_def::utc_range_cursor *cursor, uint8_t *payload_out, size_t payload_out_len,
+                                     on9rstore_def::entry_header *entry_info_out = nullptr,
+                                     on9rstore_def::entry_utc_info *utc_info_out = nullptr,
+                                     uint32_t timeout_ticks = portMAX_DELAY);
     esp_err_t flush_write(uint32_t timeout_ticks = portMAX_DELAY);
     esp_err_t deinit(bool force = false);
 
@@ -56,6 +60,22 @@ private:
         uint32_t index_count = 0;
     };
 
+    struct time_model_epoch {
+        on9rstore_def::time_anchor_entry anchor = {};
+        uint64_t replacement_root_sequence = 0;
+        uint64_t effective_uptime_us = 0;
+        uint64_t first_uptime_us = 0;
+        uint64_t last_uptime_us = UINT64_MAX;
+        uint32_t slot = 0;
+        bool effective = false;
+    };
+
+    enum class timestamp_translation_result : uint8_t {
+        in_range,
+        below_zero,
+        above_max,
+    };
+
 private:
     esp_err_t create_locks();
     esp_err_t validate_init_args() const;
@@ -73,6 +93,16 @@ private: // Manifest operations
     esp_err_t commit_manifest_superblock_unsafe();
     esp_err_t write_initial_manifest_copies();
     esp_err_t recover_time_anchor_ring();
+    esp_err_t load_time_model_catalog();
+    void insert_time_model_anchor(const on9rstore_def::time_anchor_entry &anchor, uint32_t slot);
+    void resolve_time_model_replacements();
+    void compact_and_sort_time_model_epochs();
+    void set_time_model_epoch_bounds();
+    int32_t find_time_model_sequence(uint64_t sequence, uint32_t limit) const;
+    esp_err_t validate_time_anchor_replacement(const on9rstore_def::time_anchor &anchor) const;
+    bool is_retained_boot(uint32_t boot_counter) const;
+    esp_err_t check_time_anchor_slot_reuse(uint32_t slot) const;
+    static bool is_time_model_epoch_before(const time_model_epoch &left, const time_model_epoch &right);
     esp_err_t append_time_anchor_unsafe(const on9rstore_def::time_anchor &anchor);
     esp_err_t write_time_anchor_slot(const on9rstore_def::time_anchor_entry &entry, uint32_t slot);
     esp_err_t read_time_anchor_slot(on9rstore_def::time_anchor_entry *entry_out, uint32_t slot) const;
@@ -179,6 +209,17 @@ private: // Read operations
     esp_err_t read_boot_entry_internal(const on9rstore_def::boot_uptime_range_cursor &cursor, uint8_t *payload_out,
                                        size_t payload_out_len, on9rstore_def::entry_header *entry_info_out,
                                        uint32_t timeout_ticks);
+    esp_err_t read_boot_entry_from_snapshot(const on9rstore_def::boot_uptime_range_cursor &cursor, uint8_t *payload_out,
+                                            size_t payload_out_len, on9rstore_def::entry_header *entry_info_out);
+    esp_err_t read_utc_entry_internal(const on9rstore_def::utc_range_cursor &cursor, uint8_t *payload_out, size_t payload_out_len,
+                                      on9rstore_def::entry_header *entry_info_out, on9rstore_def::entry_utc_info *utc_info_out,
+                                      uint32_t timeout_ticks);
+    bool make_utc_boot_cursor(const time_model_epoch &epoch, const on9rstore_def::utc_range_cursor &utc_cursor,
+                              on9rstore_def::boot_uptime_range_cursor *boot_cursor_out) const;
+    static timestamp_translation_result translate_timestamp(uint64_t value, uint64_t from_origin, uint64_t to_origin,
+                                                            uint64_t *translated_out);
+    static bool calculate_entry_utc(const time_model_epoch &epoch, uint64_t uptime_us, uint64_t *utc_us_out);
+    static void set_entry_utc_info(const time_model_epoch &epoch, uint64_t utc_us, on9rstore_def::entry_utc_info *utc_info_out);
     static bool is_boot_range_cursor_valid(const on9rstore_def::boot_uptime_range_cursor &cursor);
     static uint32_t get_entry_boot_counter(uint64_t entry_id);
     static uint64_t get_boot_first_entry_id(uint32_t boot_counter);
@@ -227,8 +268,10 @@ private:
 
     std::unique_ptr<segment_descriptor[]> segments;
     std::unique_ptr<on9rstore_def::sparse_index_entry[]> sparse_index;
+    std::unique_ptr<time_model_epoch[]> time_model_epochs;
     uint32_t sparse_index_count = 0;
     uint32_t sparse_index_capacity = 0;
+    uint32_t time_model_epoch_count = 0;
 
     std::unique_ptr<segment_descriptor[]> read_segments;
     std::unique_ptr<on9rstore_def::sparse_index_entry[]> read_sparse_index;

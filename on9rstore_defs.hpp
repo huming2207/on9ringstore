@@ -163,6 +163,23 @@ namespace on9rstore_def
         bool finished = false;
     };
 
+    struct utc_range_cursor {
+        uint64_t first_utc_us = 0;
+        uint64_t last_utc_us = UINT64_MAX;
+        uint64_t next_entry_id = 0;
+        bool finished = false;
+    };
+
+    struct entry_utc_info {
+        uint64_t utc_us = 0;
+        uint64_t anchor_sequence = 0;
+        uint64_t anchor_uncertainty_us = 0;
+        uint32_t source_mask = 0;
+        uint8_t source_count = 0;
+        uint8_t quality = 0;
+        uint16_t flags = 0;
+    };
+
     struct ON9RSTORE_PACKED segment_footer {
         uint32_t magic;
         uint16_t revision;

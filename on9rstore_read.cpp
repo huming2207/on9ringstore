@@ -516,7 +516,15 @@ esp_err_t on9rstore::read_boot_entry_internal(const on9rstore_def::boot_uptime_r
     snapshot_read_state_unsafe();
     xSemaphoreGive(write_lock);
 
-    ret = ESP_ERR_NOT_FOUND;
+    ret = read_boot_entry_from_snapshot(cursor, payload_out, payload_out_len, entry_info_out);
+    release_read_operation_lock();
+    return ret;
+}
+
+esp_err_t on9rstore::read_boot_entry_from_snapshot(const on9rstore_def::boot_uptime_range_cursor &cursor, uint8_t *payload_out,
+                                                   size_t payload_out_len, on9rstore_def::entry_header *entry_info_out)
+{
+    esp_err_t ret = ESP_ERR_NOT_FOUND;
     const uint64_t boot_last_entry_id = get_boot_last_entry_id(cursor.boot_counter);
     uint64_t first_entry_id = cursor.next_entry_id == 0 ? get_boot_first_entry_id(cursor.boot_counter) : cursor.next_entry_id;
     bool use_uptime_start = cursor.next_entry_id == 0;
@@ -537,6 +545,134 @@ esp_err_t on9rstore::read_boot_entry_internal(const on9rstore_def::boot_uptime_r
         use_uptime_start = cursor.next_entry_id == 0;
     }
 
+    return ret;
+}
+
+bool on9rstore::make_utc_boot_cursor(const time_model_epoch &epoch, const on9rstore_def::utc_range_cursor &utc_cursor,
+                                     on9rstore_def::boot_uptime_range_cursor *boot_cursor_out) const
+{
+    if (boot_cursor_out == nullptr) {
+        return false;
+    }
+
+    uint64_t first_uptime = 0;
+    uint64_t last_uptime = 0;
+    const timestamp_translation_result first_result =
+        translate_timestamp(utc_cursor.first_utc_us, epoch.anchor.utc_us, epoch.anchor.monotonic_us, &first_uptime);
+    const timestamp_translation_result last_result =
+        translate_timestamp(utc_cursor.last_utc_us, epoch.anchor.utc_us, epoch.anchor.monotonic_us, &last_uptime);
+    if (first_result == timestamp_translation_result::above_max || last_result == timestamp_translation_result::below_zero) {
+        return false;
+    }
+
+    if (first_result == timestamp_translation_result::below_zero || first_uptime < epoch.first_uptime_us) {
+        first_uptime = epoch.first_uptime_us;
+    }
+    if (last_result == timestamp_translation_result::above_max || last_uptime > epoch.last_uptime_us) {
+        last_uptime = epoch.last_uptime_us;
+    }
+    if (first_uptime > last_uptime) {
+        return false;
+    }
+
+    on9rstore_def::boot_uptime_range_cursor boot_cursor = {};
+    boot_cursor.boot_counter = epoch.anchor.boot_counter;
+    boot_cursor.first_uptime_us = first_uptime;
+    boot_cursor.last_uptime_us = last_uptime;
+    if (utc_cursor.next_entry_id != 0) {
+        const uint32_t next_boot_counter = get_entry_boot_counter(utc_cursor.next_entry_id);
+        if (next_boot_counter > boot_cursor.boot_counter) {
+            return false;
+        }
+        if (next_boot_counter == boot_cursor.boot_counter) {
+            boot_cursor.next_entry_id = utc_cursor.next_entry_id;
+        }
+    }
+
+    *boot_cursor_out = boot_cursor;
+    return true;
+}
+
+on9rstore::timestamp_translation_result on9rstore::translate_timestamp(uint64_t value, uint64_t from_origin, uint64_t to_origin,
+                                                                       uint64_t *translated_out)
+{
+    if (value >= from_origin) {
+        const uint64_t delta = value - from_origin;
+        if (delta > UINT64_MAX - to_origin) {
+            return timestamp_translation_result::above_max;
+        }
+        *translated_out = to_origin + delta;
+        return timestamp_translation_result::in_range;
+    }
+
+    const uint64_t delta = from_origin - value;
+    if (delta > to_origin) {
+        return timestamp_translation_result::below_zero;
+    }
+    *translated_out = to_origin - delta;
+    return timestamp_translation_result::in_range;
+}
+
+bool on9rstore::calculate_entry_utc(const time_model_epoch &epoch, uint64_t uptime_us, uint64_t *utc_us_out)
+{
+    if (utc_us_out == nullptr) {
+        return false;
+    }
+
+    return translate_timestamp(uptime_us, epoch.anchor.monotonic_us, epoch.anchor.utc_us, utc_us_out) ==
+           timestamp_translation_result::in_range;
+}
+
+void on9rstore::set_entry_utc_info(const time_model_epoch &epoch, uint64_t utc_us, on9rstore_def::entry_utc_info *utc_info_out)
+{
+    if (utc_info_out == nullptr) {
+        return;
+    }
+
+    utc_info_out->utc_us = utc_us;
+    utc_info_out->anchor_sequence = epoch.anchor.sequence;
+    utc_info_out->anchor_uncertainty_us = epoch.anchor.uncertainty_us;
+    utc_info_out->source_mask = epoch.anchor.source_mask;
+    utc_info_out->source_count = epoch.anchor.source_count;
+    utc_info_out->quality = epoch.anchor.quality;
+    utc_info_out->flags = epoch.anchor.flags;
+}
+
+esp_err_t on9rstore::read_utc_entry_internal(const on9rstore_def::utc_range_cursor &cursor, uint8_t *payload_out,
+                                             size_t payload_out_len, on9rstore_def::entry_header *entry_info_out,
+                                             on9rstore_def::entry_utc_info *utc_info_out, uint32_t timeout_ticks)
+{
+    esp_err_t ret = acquire_read_operation_locks(timeout_ticks);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    snapshot_read_state_unsafe();
+    xSemaphoreGive(write_lock);
+    ret = ESP_ERR_NOT_FOUND;
+    for (uint32_t index = 0; index < time_model_epoch_count; index += 1) {
+        const time_model_epoch &epoch = time_model_epochs[index];
+        on9rstore_def::boot_uptime_range_cursor boot_cursor = {};
+        if (!make_utc_boot_cursor(epoch, cursor, &boot_cursor)) {
+            continue;
+        }
+
+        ret = read_boot_entry_from_snapshot(boot_cursor, payload_out, payload_out_len, entry_info_out);
+        if (ret == ESP_ERR_NOT_FOUND) {
+            continue;
+        }
+        if ((ret == ESP_OK || ret == ESP_ERR_INVALID_SIZE) && entry_info_out != nullptr) {
+            uint64_t utc_us = 0;
+            if (!calculate_entry_utc(epoch, entry_info_out->uptime_us, &utc_us)) {
+                ret = ESP_ERR_INVALID_STATE;
+            } else {
+                set_entry_utc_info(epoch, utc_us, utc_info_out);
+            }
+        }
+        break;
+    }
+
+    close_reader_segment();
     release_read_operation_lock();
     return ret;
 }
@@ -615,6 +751,50 @@ esp_err_t on9rstore::read_next_entry_by_uptime(on9rstore_def::boot_uptime_range_
         *entry_info_out = entry;
     }
     if (entry.entry_id >= get_boot_last_entry_id(cursor->boot_counter)) {
+        cursor->finished = true;
+    } else {
+        cursor->next_entry_id = entry.entry_id + 1;
+    }
+    return ESP_OK;
+}
+
+esp_err_t on9rstore::read_next_entry_by_utc(on9rstore_def::utc_range_cursor *cursor, uint8_t *payload_out, size_t payload_out_len,
+                                            on9rstore_def::entry_header *entry_info_out,
+                                            on9rstore_def::entry_utc_info *utc_info_out, uint32_t timeout_ticks)
+{
+    if (cursor == nullptr || (payload_out == nullptr && payload_out_len > 0) || cursor->first_utc_us > cursor->last_utc_us) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (cursor->finished) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    on9rstore_def::entry_header entry = {};
+    on9rstore_def::entry_utc_info utc_info = {};
+    esp_err_t ret = read_utc_entry_internal(*cursor, payload_out, payload_out_len, &entry, &utc_info, timeout_ticks);
+    if (ret == ESP_ERR_NOT_FOUND) {
+        cursor->finished = true;
+        return ret;
+    }
+    if (ret != ESP_OK) {
+        if (ret == ESP_ERR_INVALID_SIZE && entry.entry_id != 0) {
+            if (entry_info_out != nullptr) {
+                *entry_info_out = entry;
+            }
+            if (utc_info_out != nullptr) {
+                *utc_info_out = utc_info;
+            }
+        }
+        return ret;
+    }
+
+    if (entry_info_out != nullptr) {
+        *entry_info_out = entry;
+    }
+    if (utc_info_out != nullptr) {
+        *utc_info_out = utc_info;
+    }
+    if (entry.entry_id == UINT64_MAX) {
         cursor->finished = true;
     } else {
         cursor->next_entry_id = entry.entry_id + 1;

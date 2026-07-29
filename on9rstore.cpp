@@ -165,6 +165,11 @@ esp_err_t on9rstore::allocate_runtime_buffers()
         return ESP_ERR_NO_MEM;
     }
 
+    time_model_epochs.reset(new (std::nothrow) time_model_epoch[time_anchor_count]);
+    if (time_model_epochs == nullptr) {
+        return ESP_ERR_NO_MEM;
+    }
+
     return ESP_OK;
 }
 
@@ -338,6 +343,7 @@ void on9rstore::reset_runtime_state()
     segments.reset();
     read_segments.reset();
     sparse_index.reset();
+    time_model_epochs.reset();
     read_sparse_index.reset();
     read_active_sparse_index.reset();
     write_buf_pos = 0;
@@ -345,6 +351,7 @@ void on9rstore::reset_runtime_state()
     active_write_offset = 0;
     sparse_index_count = 0;
     sparse_index_capacity = 0;
+    time_model_epoch_count = 0;
     read_sparse_index_count = 0;
     read_active_sparse_index_count = 0;
     read_buf_pos = 0;

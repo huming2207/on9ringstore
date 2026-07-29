@@ -578,6 +578,48 @@ crosses retained segment boundaries, and uses each segment's sparse uptime
 index to begin near the requested lower bound. It has the same payload-buffer,
 retry, snapshot, and `finished` behaviour as `read_next_entry()`.
 
+`read_next_entry_by_utc()` converts an inclusive UTC range into the applicable
+boot/uptime ranges and returns matching entries in authoritative entry-ID
+order:
+
+```c++
+on9rstore_def::utc_range_cursor cursor = {
+    .first_utc_us = utc_start_us,
+    .last_utc_us = utc_end_us,
+};
+on9rstore_def::entry_utc_info utc_info = {};
+
+while (store.read_next_entry_by_utc(
+           &cursor, payload, sizeof(payload), &entry, &utc_info) == ESP_OK) {
+    // utc_info.utc_us is derived using utc_info.anchor_sequence.
+}
+```
+
+The runtime catalog contains CRC-valid, store-matched anchors. Within each
+boot, the first effective anchor covers uptime zero onward. Each later anchor
+takes effect at its measurement uptime. An explicit replacement inherits the
+replaced anchor's effective boundary and supersedes that replacement lineage.
+A replacement whose target is missing or belongs to another boot is not used
+as a UTC model.
+
+Conversion uses checked 64-bit integer addition and subtraction:
+
+```text
+UTC(entry) = anchor.utc_us + (entry.uptime_us - anchor.monotonic_us)
+```
+
+There is no interpolation, source ranking, or floating-point calculation.
+Source validation remains the caller's responsibility before
+`append_time_anchor()`. `entry_utc_info` reports the selected anchor sequence,
+its committed source and quality fields, and its committed base uncertainty.
+The component does not calculate uncertainty growth during extrapolation.
+
+UTC cursors have the same bounded-buffer and retry behaviour as the other
+read cursors. A cursor call uses the effective anchor catalog and retained-data
+snapshot valid for that call; it does not pin the model across the whole
+iteration. Entries from a boot without a usable retained anchor cannot be
+returned by a UTC query.
+
 ## Segment layout
 
 Each fixed-size data file contains:
@@ -643,6 +685,14 @@ anchor corrects or replaces; it does not erase the older slot.
 Time anchors support deriving wall time for entries created before the clock
 became known without rewriting those entries. Entry ID and monotonic uptime
 remain the authoritative order.
+
+Before reusing a time-anchor ring slot, the component checks the boot counter
+of its valid anchor against the retained segment catalog. It returns
+`ESP_ERR_NO_MEM` instead of overwriting that slot while any entries from the
+same boot remain retained. This is deliberately conservative: it preserves
+all anchor and replacement records for retained boots rather than trying to
+prove that two models are equivalent. Slots belonging only to fully retired
+boots can be reused.
 
 ## Durability limits
 

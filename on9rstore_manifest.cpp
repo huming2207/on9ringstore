@@ -279,9 +279,17 @@ bool on9rstore::is_time_anchor_valid(const on9rstore_def::time_anchor_entry &can
 {
     if (candidate.magic != on9rstore_def::time_anchor_magic || candidate.revision != on9rstore_def::time_anchor_revision ||
         candidate.size != sizeof(candidate) || candidate.store_id != store_id || candidate.sequence == 0 ||
-        candidate.boot_counter > on9rstore_def::entry_id_boot_mask || candidate.source_mask == 0 ||
-        (candidate.source_mask & ~on9rstore_def::TIME_SOURCE_ALL) != 0 || candidate.source_count == 0 ||
-        candidate.quality > on9rstore_def::TIME_ANCHOR_QUALITY_CONFIRMED || candidate.utc_us == 0) {
+        candidate.boot_counter == 0 || candidate.boot_counter > on9rstore_def::entry_id_boot_mask || candidate.reserved != 0 ||
+        candidate.source_mask == 0 || (candidate.source_mask & ~on9rstore_def::TIME_SOURCE_ALL) != 0 ||
+        candidate.source_count == 0 || candidate.source_count < count_bits(candidate.source_mask) ||
+        candidate.quality > on9rstore_def::TIME_ANCHOR_QUALITY_CONFIRMED || candidate.utc_us == 0 ||
+        candidate.replace_sequence >= candidate.sequence) {
+        return false;
+    }
+
+    const uint16_t known_flags = on9rstore_def::TIME_ANCHOR_FLAG_CONSENSUS | on9rstore_def::TIME_ANCHOR_FLAG_PPS |
+                                 on9rstore_def::TIME_ANCHOR_FLAG_CONTINUITY;
+    if ((candidate.flags & ~known_flags) != 0) {
         return false;
     }
 
@@ -291,16 +299,137 @@ bool on9rstore::is_time_anchor_valid(const on9rstore_def::time_anchor_entry &can
     return calc_crc32(reinterpret_cast<const uint8_t *>(&copy), sizeof(copy)) == expected_crc;
 }
 
-esp_err_t on9rstore::recover_time_anchor_ring()
+void on9rstore::insert_time_model_anchor(const on9rstore_def::time_anchor_entry &anchor, uint32_t slot)
+{
+    uint32_t position = time_model_epoch_count;
+    while (position > 0 && time_model_epochs[position - 1].anchor.sequence > anchor.sequence) {
+        time_model_epochs[position] = time_model_epochs[position - 1];
+        position -= 1;
+    }
+
+    time_model_epoch &model = time_model_epochs[position];
+    model = {};
+    model.anchor = anchor;
+    model.slot = slot;
+    time_model_epoch_count += 1;
+}
+
+int32_t on9rstore::find_time_model_sequence(uint64_t sequence, uint32_t limit) const
+{
+    for (uint32_t index = 0; index < limit; index += 1) {
+        if (time_model_epochs[index].anchor.sequence == sequence) {
+            return static_cast<int32_t>(index);
+        }
+    }
+
+    return -1;
+}
+
+void on9rstore::resolve_time_model_replacements()
+{
+    for (uint32_t index = 0; index < time_model_epoch_count; index += 1) {
+        time_model_epoch &model = time_model_epochs[index];
+        model.replacement_root_sequence = model.anchor.sequence;
+        model.effective_uptime_us = model.anchor.monotonic_us;
+        model.effective = true;
+        if (model.anchor.replace_sequence == 0) {
+            continue;
+        }
+
+        const int32_t target_index = find_time_model_sequence(model.anchor.replace_sequence, index);
+        if (target_index < 0 || time_model_epochs[target_index].anchor.boot_counter != model.anchor.boot_counter) {
+            model.replacement_root_sequence = 0;
+            model.effective = false;
+            continue;
+        }
+
+        const time_model_epoch &target = time_model_epochs[target_index];
+        if (target.replacement_root_sequence == 0) {
+            model.replacement_root_sequence = 0;
+            model.effective = false;
+            continue;
+        }
+        model.replacement_root_sequence = target.replacement_root_sequence;
+        model.effective_uptime_us = target.effective_uptime_us;
+        for (uint32_t prior = 0; prior < index; prior += 1) {
+            if (time_model_epochs[prior].anchor.boot_counter == model.anchor.boot_counter &&
+                time_model_epochs[prior].replacement_root_sequence == model.replacement_root_sequence) {
+                time_model_epochs[prior].effective = false;
+            }
+        }
+    }
+}
+
+bool on9rstore::is_time_model_epoch_before(const time_model_epoch &left, const time_model_epoch &right)
+{
+    if (left.anchor.boot_counter != right.anchor.boot_counter) {
+        return left.anchor.boot_counter < right.anchor.boot_counter;
+    }
+    if (left.effective_uptime_us != right.effective_uptime_us) {
+        return left.effective_uptime_us < right.effective_uptime_us;
+    }
+    return left.anchor.sequence < right.anchor.sequence;
+}
+
+void on9rstore::compact_and_sort_time_model_epochs()
+{
+    uint32_t compacted_count = 0;
+    for (uint32_t index = 0; index < time_model_epoch_count; index += 1) {
+        if (time_model_epochs[index].effective) {
+            time_model_epochs[compacted_count] = time_model_epochs[index];
+            compacted_count += 1;
+        }
+    }
+    time_model_epoch_count = compacted_count;
+
+    for (uint32_t index = 1; index < time_model_epoch_count; index += 1) {
+        const time_model_epoch value = time_model_epochs[index];
+        uint32_t position = index;
+        while (position > 0 && is_time_model_epoch_before(value, time_model_epochs[position - 1])) {
+            time_model_epochs[position] = time_model_epochs[position - 1];
+            position -= 1;
+        }
+        time_model_epochs[position] = value;
+    }
+
+    compacted_count = 0;
+    for (uint32_t index = 0; index < time_model_epoch_count; index += 1) {
+        if (compacted_count > 0 &&
+            time_model_epochs[compacted_count - 1].anchor.boot_counter == time_model_epochs[index].anchor.boot_counter &&
+            time_model_epochs[compacted_count - 1].effective_uptime_us == time_model_epochs[index].effective_uptime_us) {
+            time_model_epochs[compacted_count - 1] = time_model_epochs[index];
+        } else {
+            time_model_epochs[compacted_count] = time_model_epochs[index];
+            compacted_count += 1;
+        }
+    }
+    time_model_epoch_count = compacted_count;
+}
+
+void on9rstore::set_time_model_epoch_bounds()
+{
+    for (uint32_t index = 0; index < time_model_epoch_count; index += 1) {
+        time_model_epoch &model = time_model_epochs[index];
+        const bool first_for_boot = index == 0 || time_model_epochs[index - 1].anchor.boot_counter != model.anchor.boot_counter;
+        const bool last_for_boot =
+            index + 1 == time_model_epoch_count || time_model_epochs[index + 1].anchor.boot_counter != model.anchor.boot_counter;
+
+        model.first_uptime_us = first_for_boot ? 0 : model.effective_uptime_us;
+        model.last_uptime_us = last_for_boot ? UINT64_MAX : time_model_epochs[index + 1].effective_uptime_us - 1;
+    }
+}
+
+esp_err_t on9rstore::load_time_model_catalog()
 {
     uint64_t newest_sequence = 0;
     uint32_t newest_slot = 0;
-    uint32_t valid_count = 0;
+    time_model_epoch_count = 0;
 
     for (uint32_t slot = 0; slot < time_anchor_count; slot += 1) {
         on9rstore_def::time_anchor_entry candidate = {};
         esp_err_t ret = read_time_anchor_slot(&candidate, slot);
         if (ret != ESP_OK) {
+            time_model_epoch_count = 0;
             return ret;
         }
 
@@ -308,7 +437,7 @@ esp_err_t on9rstore::recover_time_anchor_ring()
             continue;
         }
 
-        valid_count += 1;
+        insert_time_model_anchor(candidate, slot);
         if (candidate.sequence > newest_sequence) {
             newest_sequence = candidate.sequence;
             newest_slot = slot;
@@ -316,8 +445,21 @@ esp_err_t on9rstore::recover_time_anchor_ring()
     }
 
     state.next_time_anchor_sequence = newest_sequence;
-    state.time_anchor_used = valid_count > time_anchor_count ? time_anchor_count : valid_count;
+    state.time_anchor_used = time_model_epoch_count;
     state.time_anchor_write_index = newest_sequence == 0 ? 0 : (newest_slot + 1) % time_anchor_count;
+    resolve_time_model_replacements();
+    compact_and_sort_time_model_epochs();
+    set_time_model_epoch_bounds();
+    return ESP_OK;
+}
+
+esp_err_t on9rstore::recover_time_anchor_ring()
+{
+    esp_err_t ret = load_time_model_catalog();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
     return commit_manifest_superblock_unsafe();
 }
 
@@ -335,6 +477,53 @@ bool on9rstore::is_time_anchor_input_valid(const on9rstore_def::time_anchor &anc
     return (anchor.flags & ~known_flags) == 0;
 }
 
+esp_err_t on9rstore::validate_time_anchor_replacement(const on9rstore_def::time_anchor &anchor) const
+{
+    if (anchor.replace_sequence == 0) {
+        return ESP_OK;
+    }
+
+    for (uint32_t slot = 0; slot < time_anchor_count; slot += 1) {
+        on9rstore_def::time_anchor_entry candidate = {};
+        esp_err_t ret = read_time_anchor_slot(&candidate, slot);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        if (is_time_anchor_valid(candidate) && candidate.sequence == anchor.replace_sequence) {
+            return candidate.boot_counter == state.boot_counter ? ESP_OK : ESP_ERR_INVALID_ARG;
+        }
+    }
+
+    return ESP_ERR_INVALID_ARG;
+}
+
+bool on9rstore::is_retained_boot(uint32_t boot_counter) const
+{
+    for (uint32_t slot = 0; slot < segment_count; slot += 1) {
+        const segment_descriptor &segment = segments[slot];
+        if (segment.valid && segment.entry_count > 0 && get_entry_boot_counter(segment.first_entry_id) <= boot_counter &&
+            get_entry_boot_counter(segment.last_entry_id) >= boot_counter) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+esp_err_t on9rstore::check_time_anchor_slot_reuse(uint32_t slot) const
+{
+    on9rstore_def::time_anchor_entry candidate = {};
+    esp_err_t ret = read_time_anchor_slot(&candidate, slot);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    if (!is_time_anchor_valid(candidate) || !is_retained_boot(candidate.boot_counter)) {
+        return ESP_OK;
+    }
+
+    return ESP_ERR_NO_MEM;
+}
+
 esp_err_t on9rstore::append_time_anchor_unsafe(const on9rstore_def::time_anchor &anchor)
 {
     if (!is_time_anchor_input_valid(anchor)) {
@@ -344,7 +533,16 @@ esp_err_t on9rstore::append_time_anchor_unsafe(const on9rstore_def::time_anchor 
         return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t ret = flush_unsafe();
+    esp_err_t ret = validate_time_anchor_replacement(anchor);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ret = check_time_anchor_slot_reuse(state.time_anchor_write_index);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = flush_unsafe();
     if (ret != ESP_OK) {
         return ret;
     }
@@ -373,10 +571,9 @@ esp_err_t on9rstore::append_time_anchor_unsafe(const on9rstore_def::time_anchor 
         return ret;
     }
 
-    state.next_time_anchor_sequence = entry.sequence;
-    state.time_anchor_write_index = (slot + 1) % time_anchor_count;
-    if (state.time_anchor_used < time_anchor_count) {
-        state.time_anchor_used += 1;
+    ret = load_time_model_catalog();
+    if (ret != ESP_OK) {
+        return ret;
     }
 
     return commit_manifest_superblock_unsafe();
@@ -389,7 +586,13 @@ esp_err_t on9rstore::append_time_anchor(const on9rstore_def::time_anchor &anchor
         return ret;
     }
 
+    if (xSemaphoreTake(read_lock, timeout_ticks) != pdTRUE) {
+        release_operation_lock();
+        return ESP_ERR_TIMEOUT;
+    }
+
     ret = append_time_anchor_unsafe(anchor);
+    xSemaphoreGive(read_lock);
     release_operation_lock();
     return ret;
 }
