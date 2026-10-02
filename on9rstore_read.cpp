@@ -351,13 +351,6 @@ esp_err_t on9rstore::read_matching_entry(const segment_descriptor &descriptor, c
             return ret;
         }
 
-        const bool matches =
-            exact ? entry.entry_id == first_entry_id : entry.entry_id >= first_entry_id && entry.entry_id <= last_entry_id;
-        ret = validate_snapshot_entry_payload(header, offset, entry, payload_out, payload_out_len, matches);
-        if (ret != ESP_OK && !(matches && ret == ESP_ERR_INVALID_SIZE)) {
-            return ret;
-        }
-
         if ((first_scanned && start_index.entry_id != 0 &&
              (entry.entry_id != start_index.entry_id || entry.uptime_us != start_index.uptime_us ||
               entry.type != start_index.type || offset != start_index.offset)) ||
@@ -365,11 +358,16 @@ esp_err_t on9rstore::read_matching_entry(const segment_descriptor &descriptor, c
             return ESP_ERR_INVALID_CRC;
         }
 
+        // Only the matching payload is checked: a corrupt entry that is skipped over must not
+        // hide the entries after it. A corrupt match still reports its header so callers can
+        // move past it.
+        const bool matches =
+            exact ? entry.entry_id == first_entry_id : entry.entry_id >= first_entry_id && entry.entry_id <= last_entry_id;
         if (matches) {
             if (entry_info_out != nullptr) {
                 *entry_info_out = entry;
             }
-            return ret;
+            return validate_snapshot_entry_payload(header, offset, entry, payload_out, payload_out_len, true);
         }
 
         if (entry.entry_id > last_entry_id || (exact && entry.entry_id > first_entry_id)) {
@@ -739,7 +737,8 @@ esp_err_t on9rstore::read_next_entry(on9rstore_def::entry_range_cursor *cursor, 
         return ret;
     }
     if (ret != ESP_OK) {
-        if (entry_info_out != nullptr && ret == ESP_ERR_INVALID_SIZE && entry.entry_id != 0) {
+        // Too small a buffer or a corrupt payload: the header still names the entry to resume after
+        if (entry_info_out != nullptr && (ret == ESP_ERR_INVALID_SIZE || ret == ESP_ERR_INVALID_CRC) && entry.entry_id != 0) {
             *entry_info_out = entry;
         }
         return ret;

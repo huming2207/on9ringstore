@@ -72,6 +72,8 @@ bookmark and rotation still reuses the oldest segment. With
 `protect_unacked = true`, an append that would reuse a segment still holding
 entries newer than the acknowledged ID returns `ESP_ERR_NO_MEM` and writes
 nothing. Appends succeed again once the host acknowledges far enough.
+`can_append(payload_len)` answers the same question without writing, so a
+caller can refuse work whose record would not fit before starting it.
 `init()` still succeeds when the boot entry is refused this way, so the store
 can be read and acknowledged. Recovery after a reset between sealing a segment
 and opening the next one opens the next slot without this check.
@@ -547,6 +549,15 @@ and leaves `entry_info_out->len` set to the required payload size. Passing
 `nullptr, 0` is therefore a bounded way to query an entry's header and required
 payload size.
 
+A payload that fails its CRC returns `ESP_ERR_INVALID_CRC`. When the entry's
+header is still structurally valid (magic, store, slot, generation, bounds and
+ordering), `entry_info_out` is filled too, so a reader can report the entry as
+corrupt and continue from the next ID. Entries scanned past on the way to the
+requested one are checked only for that header structure, not their payload
+CRC, so one corrupt payload does not hide the entries after it. Recovery at
+`init()` still checks every CRC and truncates an open segment at the first
+corrupt entry.
+
 `read_next_entry()` provides forward inclusive range iteration:
 
 ```c++
@@ -563,8 +574,9 @@ while (store.read_next_entry(
 
 `next_entry_id == 0` begins at the oldest retained entry. Entry-ID gaps are
 skipped. After a successful read the cursor advances beyond the returned ID.
-It does not advance after `ESP_ERR_INVALID_SIZE` or another error, so the
-caller can retry with a larger buffer. Once no retained entry remains in the
+It does not advance after `ESP_ERR_INVALID_SIZE`, `ESP_ERR_INVALID_CRC` or
+another error, so the caller can retry with a larger buffer or set
+`next_entry_id` past the reported entry. Once no retained entry remains in the
 inclusive range, the API returns `ESP_ERR_NOT_FOUND` and sets
 `cursor.finished`.
 
@@ -717,7 +729,10 @@ of its valid anchor against the retained segment catalog. It returns
 same boot remain retained. This is deliberately conservative: it preserves
 all anchor and replacement records for retained boots rather than trying to
 prove that two models are equivalent. Slots belonging only to fully retired
-boots can be reused.
+boots can be reused, and so can slots of boots older than the boot of
+`get_acked_entry_id()`: all their entries are collected. Those entries stay
+readable but may lose their UTC time. Without this, a store that is booted and
+given the time more often than it rotates would run out of slots.
 
 ## Durability limits
 
@@ -748,3 +763,6 @@ idf.py build
 ESP-IDF v6.1 ships FatFs with `FF_USE_EXPAND 0`, so
 `esp_vfs_fat_create_contiguous_file()` fails to link. Set it to `1` in
 `components/fatfs/src/ffconf.h` until upstream commit `74a7a4b` is released.
+
+The corrupt-entry test runs on ESP32 QEMU only: on the linux target a second
+`open()` of a segment file returns an unusable descriptor.

@@ -121,6 +121,21 @@ esp_err_t on9rstore::prepare_entry_space_unsafe(uint64_t entry_size)
     return rotate_active_segment_unsafe();
 }
 
+bool on9rstore::can_append(size_t payload_len) const
+{
+    if (payload_len > UINT32_MAX || acquire_operation_lock(portMAX_DELAY) != ESP_OK) {
+        return false;
+    }
+
+    // Same rules as prepare_entry_space_unsafe(), without rotating
+    const uint64_t entry_size = get_entry_size(static_cast<uint32_t>(payload_len));
+    const bool fits =
+        entry_size != 0 && entry_size <= active_segment.data_end - active_segment.data_start &&
+        (entry_size <= active_segment.data_end - active_write_offset || !cfg.protect_unacked || is_next_segment_acked_unsafe());
+    release_operation_lock();
+    return fits;
+}
+
 bool on9rstore::is_next_segment_acked_unsafe() const
 {
     const segment_descriptor &next = segments[(state.active_slot + 1) % segment_count];

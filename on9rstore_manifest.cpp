@@ -517,7 +517,9 @@ esp_err_t on9rstore::check_time_anchor_slot_reuse(uint32_t slot) const
     if (ret != ESP_OK) {
         return ret;
     }
-    if (!is_time_anchor_valid(candidate) || !is_retained_boot(candidate.boot_counter)) {
+    // Every entry of a boot before the acknowledged one is collected and no longer needs its anchor
+    if (!is_time_anchor_valid(candidate) || !is_retained_boot(candidate.boot_counter) ||
+        candidate.boot_counter < get_entry_boot_counter(state.acked_entry_id)) {
         return ESP_OK;
     }
 

@@ -48,6 +48,7 @@ public:
 
     [[nodiscard]] uint64_t get_newest_entry_id() const;
     [[nodiscard]] uint64_t get_acked_entry_id() const;
+    [[nodiscard]] bool can_append(size_t payload_len) const;
     [[nodiscard]] uint32_t get_boot_counter() const;
     [[nodiscard]] uint64_t get_used_size() const;
     [[nodiscard]] uint32_t get_time_anchor_count() const;
