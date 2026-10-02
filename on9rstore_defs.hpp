@@ -114,10 +114,11 @@ namespace on9rstore_def
         uint64_t next_time_anchor_sequence;
         uint32_t coredump_crc32;
         uint32_t coredump_size;
+        uint64_t acked_entry_id;
         uint32_t checksum;
     };
 
-    static_assert(sizeof(manifest_superblock) == 132);
+    static_assert(sizeof(manifest_superblock) == 140);
 
     struct ON9RSTORE_PACKED segment_header {
         uint32_t magic;
@@ -203,7 +204,7 @@ namespace on9rstore_def
     static const constexpr uint32_t entry_magic = 0x39525352; // "RSR9"
     static const constexpr uint16_t entry_revision = 4;
     static const constexpr uint32_t manifest_magic = 0x39534d52; // "RMS9"
-    static const constexpr uint16_t manifest_revision = 4;
+    static const constexpr uint16_t manifest_revision = 5;
     static const constexpr uint16_t manifest_state_provisioning_unverified = 0x7001;
     static const constexpr uint16_t manifest_state_ready = 0x7002;
     static const constexpr uint16_t manifest_state_provisioning_owned = 0x7003;

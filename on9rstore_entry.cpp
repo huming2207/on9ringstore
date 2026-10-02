@@ -113,7 +113,18 @@ esp_err_t on9rstore::prepare_entry_space_unsafe(uint64_t entry_size)
         return ESP_OK;
     }
 
+    // Check before sealing so a refusal leaves the active segment writable
+    if (cfg.protect_unacked && !is_next_segment_acked_unsafe()) {
+        return ESP_ERR_NO_MEM;
+    }
+
     return rotate_active_segment_unsafe();
+}
+
+bool on9rstore::is_next_segment_acked_unsafe() const
+{
+    const segment_descriptor &next = segments[(state.active_slot + 1) % segment_count];
+    return !next.valid || next.entry_count == 0 || next.last_entry_id <= state.acked_entry_id;
 }
 
 esp_err_t on9rstore::rotate_active_segment_unsafe()
@@ -313,6 +324,28 @@ esp_err_t on9rstore::flush_write(uint32_t timeout_ticks)
     }
 
     ret = flush_unsafe();
+    release_operation_lock();
+    return ret;
+}
+
+esp_err_t on9rstore::set_acked_entry_id(uint64_t entry_id, uint32_t timeout_ticks)
+{
+    esp_err_t ret = acquire_operation_lock(timeout_ticks);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    if (entry_id > newest_entry_id) {
+        ret = ESP_ERR_INVALID_ARG;
+    } else if (entry_id > state.acked_entry_id) {
+        // Flush first so the ack never covers entries that are not yet on flash
+        ret = flush_unsafe();
+        if (ret == ESP_OK) {
+            state.acked_entry_id = entry_id;
+            ret = commit_manifest_superblock_unsafe();
+        }
+    }
+
     release_operation_lock();
     return ret;
 }

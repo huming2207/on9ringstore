@@ -224,6 +224,11 @@ esp_err_t on9rstore::finish_initialisation()
 
     ret = append_boot_entry_unsafe();
     xSemaphoreGive(write_lock);
+    if (ret == ESP_ERR_NO_MEM && cfg.protect_unacked) {
+        // Keep the store usable so the unacked entries can still be read and acked
+        ESP_LOGW(TAG, "Init: store full of unacked entries, boot entry skipped");
+        ret = ESP_OK;
+    }
     if (ret != ESP_OK) {
         initialized = false;
     }
@@ -299,6 +304,17 @@ uint64_t on9rstore::get_newest_entry_id() const
     }
 
     const uint64_t result = newest_entry_id;
+    release_operation_lock();
+    return result;
+}
+
+uint64_t on9rstore::get_acked_entry_id() const
+{
+    if (acquire_operation_lock(portMAX_DELAY) != ESP_OK) {
+        return 0;
+    }
+
+    const uint64_t result = state.acked_entry_id;
     release_operation_lock();
     return result;
 }

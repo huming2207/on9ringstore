@@ -14,6 +14,7 @@
 struct on9rstore_cfg {
     size_t write_buffer_size = 8192;
     bool copy_coredump = true;
+    bool protect_unacked = false; // Refuse appends that would overwrite entries newer than the acked ID
 };
 
 class on9rstore
@@ -40,9 +41,11 @@ public:
                                      on9rstore_def::entry_utc_info *utc_info_out = nullptr,
                                      uint32_t timeout_ticks = portMAX_DELAY);
     esp_err_t flush_write(uint32_t timeout_ticks = portMAX_DELAY);
+    esp_err_t set_acked_entry_id(uint64_t entry_id, uint32_t timeout_ticks = portMAX_DELAY);
     esp_err_t deinit(bool force = false);
 
     [[nodiscard]] uint64_t get_newest_entry_id() const;
+    [[nodiscard]] uint64_t get_acked_entry_id() const;
     [[nodiscard]] uint32_t get_boot_counter() const;
     [[nodiscard]] uint64_t get_used_size() const;
     [[nodiscard]] uint32_t get_time_anchor_count() const;
@@ -169,6 +172,7 @@ private: // Entry operations; write_lock must be held
                                          on9rstore_def::entry_header *entry_info_out);
     esp_err_t prepare_entry_space_unsafe(uint64_t entry_size);
     esp_err_t rotate_active_segment_unsafe();
+    bool is_next_segment_acked_unsafe() const;
     esp_err_t flush_unsafe();
     esp_err_t write_entry_trailer_unsafe(uint64_t entry_offset, uint32_t payload_len, uint32_t crc, uint64_t entry_size);
     esp_err_t write_zeroes_unsafe(int file_fd, uint64_t file_size, uint64_t offset, uint64_t len) const;

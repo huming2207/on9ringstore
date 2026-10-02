@@ -7,6 +7,7 @@ device data. The constructor path is a mounted FAT base path:
 on9rstore_cfg cfg = {
     .write_buffer_size = 8192,
     .copy_coredump = true,
+    .protect_unacked = false,
 };
 
 on9rstore store("/data", &cfg);
@@ -56,6 +57,25 @@ manifest checkpoint preserves that active generation instead of resetting it.
 Legacy unverified provisioning manifests fail closed. Ready stores are
 unchanged.
 
+## Acknowledged entries
+
+`set_acked_entry_id(id)` records that every entry up to and including `id` has
+been collected, for example uploaded to a server. It flushes the write buffer,
+stores `id` in the manifest superblock and commits it, so each call costs one
+manifest write and sync. The ID only moves forward: a call with an ID at or
+below the current one succeeds without writing, and an ID above
+`get_newest_entry_id()` returns `ESP_ERR_INVALID_ARG`. Collect from
+`get_acked_entry_id() + 1` with `read_next_entry()`.
+
+With `protect_unacked = false` (the default) the acknowledgement is only a
+bookmark and rotation still reuses the oldest segment. With
+`protect_unacked = true`, an append that would reuse a segment still holding
+entries newer than the acknowledged ID returns `ESP_ERR_NO_MEM` and writes
+nothing. Appends succeed again once the host acknowledges far enough.
+`init()` still succeeds when the boot entry is refused this way, so the store
+can be read and acknowledged. Recovery after a reset between sealing a segment
+and opening the next one opens the next slot without this check.
+
 ## Descriptors and concurrency
 
 The component uses three distinct descriptors:
@@ -70,7 +90,7 @@ dedicated FreeRTOS mutexes. A reader mutex is allocated for the public query
 path; initial recovery is performed exclusively before `init()` publishes the
 store.
 
-## Revision-4 on-disk byte and bit layout
+## On-disk byte and bit layout
 
 All persisted structures are packed without implicit padding. Multi-byte
 integers are stored in the ESP target's little-endian byte order. Offsets below
@@ -110,11 +130,11 @@ file offset
 
 0x000000  +----------------------------------------------------------+
           | superblock slot 0                              4096 bytes |
-          |   132-byte manifest_superblock                            |
+          |   140-byte manifest_superblock                            |
           |   3964-byte uninterpreted slot tail                       |
 0x001000  +----------------------------------------------------------+
           | superblock slot 1                              4096 bytes |
-          |   132-byte manifest_superblock                            |
+          |   140-byte manifest_superblock                            |
           |   3964-byte uninterpreted slot tail                       |
 0x002000  +----------------------------------------------------------+
           | time-anchor slot 0                              512 bytes |
@@ -141,14 +161,14 @@ slot = superblock.generation % 2
 
 The newest CRC-valid generation is authoritative.
 
-#### `manifest_superblock` — 132 bytes
+#### `manifest_superblock` — 140 bytes
 
 ```text
 byte range    size   field
 
 +0x00..0x03     4    magic = 0x39534d52, bytes "RMS9"
-+0x04..0x05     2    revision = 4
-+0x06..0x07     2    size = 132
++0x04..0x05     2    revision = 5
++0x06..0x07     2    size = 140
 +0x08..0x0f     8    generation
 +0x10..0x11     2    store_id
 +0x12..0x13     2    state
@@ -171,7 +191,8 @@ byte range    size   field
 +0x70..0x77     8    next_time_anchor_sequence
 +0x78..0x7b     4    coredump_crc32
 +0x7c..0x7f     4    coredump_size
-+0x80..0x83     4    checksum
++0x80..0x87     8    acked_entry_id; 0 when nothing is acknowledged
++0x88..0x8b     4    checksum
 ```
 
 Manifest state values:
@@ -182,7 +203,7 @@ Manifest state values:
 0x7003  provisioning_owned; namespace preflight completed
 ```
 
-`checksum` covers all 132 bytes with the checksum field treated as zero.
+`checksum` covers all 140 bytes with the checksum field treated as zero.
 
 #### `time_anchor_entry` — 76 bytes inside each 512-byte slot
 
@@ -707,3 +728,19 @@ flash writes. Power-cut validation therefore requires deterministic
 write/sync fault injection and real-media testing; a successful firmware build
 alone is not evidence of end-to-end sudden-power-loss safety. A future
 `esp_jrnl` integration remains a separate task.
+
+## Tests
+
+`test_app/` runs the store over FAT on wear-levelled flash, either on the
+ESP-IDF linux target (needs `libbsd-dev`) or on ESP32 QEMU:
+
+```sh
+cd test_app
+idf.py --preview set-target linux    # or: idf.py set-target esp32
+idf.py build
+./build/on9rstore_test.elf           # or: idf.py qemu monitor
+```
+
+ESP-IDF v6.1 ships FatFs with `FF_USE_EXPAND 0`, so
+`esp_vfs_fat_create_contiguous_file()` fails to link. Set it to `1` in
+`components/fatfs/src/ffconf.h` until upstream commit `74a7a4b` is released.
