@@ -677,6 +677,39 @@ esp_err_t on9rstore::read_utc_entry_internal(const on9rstore_def::utc_range_curs
     return ret;
 }
 
+esp_err_t on9rstore::get_entry_utc(const on9rstore_def::entry_header &entry, on9rstore_def::entry_utc_info *utc_info_out,
+                                   uint32_t timeout_ticks)
+{
+    if (utc_info_out == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t ret = acquire_operation_lock(timeout_ticks);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    const uint32_t boot_counter = get_entry_boot_counter(entry.entry_id);
+    ret = ESP_ERR_NOT_FOUND;
+    for (uint32_t index = 0; index < time_model_epoch_count; index += 1) {
+        const time_model_epoch &epoch = time_model_epochs[index];
+        if (epoch.anchor.boot_counter != boot_counter || entry.uptime_us < epoch.first_uptime_us ||
+            entry.uptime_us > epoch.last_uptime_us) {
+            continue;
+        }
+
+        uint64_t utc_us = 0;
+        ret = calculate_entry_utc(epoch, entry.uptime_us, &utc_us) ? ESP_OK : ESP_ERR_INVALID_STATE;
+        if (ret == ESP_OK) {
+            set_entry_utc_info(epoch, utc_us, utc_info_out);
+        }
+        break;
+    }
+
+    release_operation_lock();
+    return ret;
+}
+
 esp_err_t on9rstore::read_entry(uint64_t entry_id, uint8_t *payload_out, size_t payload_out_len,
                                 on9rstore_def::entry_header *entry_info_out, uint32_t timeout_ticks)
 {

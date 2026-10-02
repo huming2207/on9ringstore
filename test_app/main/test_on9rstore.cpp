@@ -2,7 +2,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <dirent.h>
 #include <unistd.h>
 
 #include <diskio_impl.h>
@@ -34,6 +33,9 @@ extern "C" int64_t esp_timer_get_time(void)
     return static_cast<int64_t>(now.tv_sec) * 1000000 + now.tv_nsec / 1000;
 }
 
+static char drive[3] = {};
+static FATFS *fs = nullptr;
+
 static void mount_fat()
 {
     wl_handle_t wl_handle = WL_INVALID_HANDLE;
@@ -45,18 +47,21 @@ static void mount_fat()
     BYTE pdrv = 0;
     TEST_ASSERT_EQUAL(ESP_OK, ff_diskio_get_drive(&pdrv));
     TEST_ASSERT_EQUAL(ESP_OK, ff_diskio_register_wl_partition(pdrv, wl_handle));
+    drive[0] = static_cast<char>('0' + pdrv);
+    drive[1] = ':';
 
-    char drive[3] = {static_cast<char>('0' + pdrv), ':', 0};
-    BYTE work_buf[FF_MAX_SS] = {};
-    const MKFS_PARM opt = {FM_ANY, 0, 0, 0, 0};
-    TEST_ASSERT_EQUAL(FR_OK, f_mkfs(drive, &opt, work_buf, sizeof(work_buf)));
-
-    FATFS *fs = nullptr;
     esp_vfs_fat_conf_t conf = {};
     conf.base_path = BASE_PATH;
     conf.fat_drive = drive;
     conf.max_files = 8;
     TEST_ASSERT_EQUAL(ESP_OK, esp_vfs_fat_register(&conf, &fs));
+}
+
+static void format_fat()
+{
+    BYTE work_buf[FF_MAX_SS] = {};
+    const MKFS_PARM opt = {FM_ANY, 0, 0, 0, 0};
+    TEST_ASSERT_EQUAL(FR_OK, f_mkfs(drive, &opt, work_buf, sizeof(work_buf)));
     TEST_ASSERT_EQUAL(FR_OK, f_mount(fs, drive, 1));
 }
 #else
@@ -69,19 +74,12 @@ static void mount_fat()
     conf.allocation_unit_size = 4096;
     TEST_ASSERT_EQUAL(ESP_OK, esp_vfs_fat_spiflash_mount_rw_wl(BASE_PATH, "storage", &conf, &wl_handle));
 }
-#endif
 
-static void remove_store_files()
+static void format_fat()
 {
-    DIR *dir = opendir(BASE_PATH);
-    TEST_ASSERT_NOT_NULL(dir);
-    char path[300] = {};
-    for (dirent *entry = readdir(dir); entry != nullptr; entry = readdir(dir)) {
-        snprintf(path, sizeof(path), "%s/%s", BASE_PATH, entry->d_name);
-        unlink(path);
-    }
-    closedir(dir);
+    TEST_ASSERT_EQUAL(ESP_OK, esp_vfs_fat_spiflash_format_rw_wl(BASE_PATH, "storage"));
 }
+#endif
 
 static void append_until_refused(on9rstore &store, size_t payload_len, uint32_t *appended_out)
 {
@@ -101,9 +99,11 @@ static uint64_t read_first_entry_id(on9rstore &store)
     return header.entry_id;
 }
 
+// A fresh volume per test; f_expand() can fail once FatFs's next-cluster hint
+// sits past the free space, which deleting the previous store's files leaves.
 void setUp()
 {
-    remove_store_files();
+    format_fat();
 }
 
 void tearDown()
@@ -186,6 +186,25 @@ static void test_full_protected_store_still_initialises()
     TEST_ASSERT_EQUAL(ESP_OK, store->deinit());
 }
 
+static void test_entry_utc_follows_time_anchor()
+{
+    open_store(false);
+    on9rstore_def::entry_header entry = {};
+    TEST_ASSERT_EQUAL(ESP_OK, store->append_entry(TEST_ENTRY, payload, 8, &entry));
+    on9rstore_def::entry_utc_info utc_info = {};
+    TEST_ASSERT_EQUAL(ESP_ERR_NOT_FOUND, store->get_entry_utc(entry, &utc_info));
+
+    // An anchor set later in the same boot also dates earlier entries
+    on9rstore_def::time_anchor anchor = {};
+    anchor.source_mask = on9rstore_def::TIME_SOURCE_MANUAL;
+    anchor.source_count = 1;
+    anchor.monotonic_us = entry.uptime_us + 5000000;
+    anchor.utc_us = 1800000000000000ULL;
+    TEST_ASSERT_EQUAL(ESP_OK, store->append_time_anchor(anchor));
+    TEST_ASSERT_EQUAL(ESP_OK, store->get_entry_utc(entry, &utc_info));
+    TEST_ASSERT_EQUAL_UINT64(anchor.utc_us - 5000000, utc_info.utc_us);
+}
+
 extern "C" void app_main(void)
 {
     mount_fat();
@@ -196,6 +215,7 @@ extern "C" void app_main(void)
     RUN_TEST(test_unprotected_store_overwrites_oldest);
     RUN_TEST(test_protected_store_keeps_unacked_entries);
     RUN_TEST(test_full_protected_store_still_initialises);
+    RUN_TEST(test_entry_utc_follows_time_anchor);
     const int failures = UNITY_END();
 #if CONFIG_IDF_TARGET_LINUX
     exit(failures);

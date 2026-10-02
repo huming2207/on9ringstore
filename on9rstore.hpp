@@ -40,6 +40,8 @@ public:
                                      on9rstore_def::entry_header *entry_info_out = nullptr,
                                      on9rstore_def::entry_utc_info *utc_info_out = nullptr,
                                      uint32_t timeout_ticks = portMAX_DELAY);
+    esp_err_t get_entry_utc(const on9rstore_def::entry_header &entry, on9rstore_def::entry_utc_info *utc_info_out,
+                            uint32_t timeout_ticks = portMAX_DELAY);
     esp_err_t flush_write(uint32_t timeout_ticks = portMAX_DELAY);
     esp_err_t set_acked_entry_id(uint64_t entry_id, uint32_t timeout_ticks = portMAX_DELAY);
     esp_err_t deinit(bool force = false);

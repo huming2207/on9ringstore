@@ -641,6 +641,10 @@ snapshot valid for that call; it does not pin the model across the whole
 iteration. Entries from a boot without a usable retained anchor cannot be
 returned by a UTC query.
 
+`get_entry_utc(header, &utc_info)` applies the same model to one entry already
+read by ID, for example from `read_next_entry()`. It returns
+`ESP_ERR_NOT_FOUND` when the entry's boot has no usable anchor.
+
 ## Segment layout
 
 Each fixed-size data file contains:
